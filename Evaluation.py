@@ -125,12 +125,11 @@ if __name__ == "__main__":
 
     pa_df = pd.DataFrame(columns=['name', 'pa_tp', 'pa_tn', 'pa_fp', 'pa_fn', 'pa_pre', 'pa_rec', 'pa_f1', 'latency'])
 
-    data_info = os.listdir(os.path.join('./datasets', 'MSL_SMAP'))
-    data_info = sorted(data_info)
-    data_info = ["M-6"]
+    csv_reader = pd.read_csv('datasets/MSL_SMAP/labeled_anomalies.csv')
+    data_info = csv_reader[csv_reader['spacecraft'] == 'MSL']
 
     ds_name = 'MSL'
-    for filename in data_info:
+    for filename in data_info['chan_id']:
         if filename != '.json':
             print(filename)
             df_train = pd.read_csv(f"results/{ds_name}/" + filename + "/classification/classification_trainprobs.csv")

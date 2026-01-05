@@ -10,8 +10,7 @@ from metrics.AUC import *
 from metrics.Matthews_correlation_coefficient import *
 from metrics.affiliation.generics import convert_vector_to_events
 from metrics.affiliation.metrics import pr_from_events
-from metrics.vus.models.feature import Window
-from metrics.vus.metrics import get_range_vus_roc
+
 
 from pate.PATE_metric import PATE
 

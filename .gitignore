@@ -3,3 +3,4 @@ results
 *.csv
 **/.idea/
 **/__pycache__
+logs

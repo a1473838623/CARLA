@@ -83,7 +83,7 @@ class AugmentedDataset(Dataset):
     def concat_ds(self, new_ds):
         self.dataset.data = np.concatenate((self.dataset.data, new_ds.dataset.data), axis=0)
         self.dataset.targets = np.concatenate((self.dataset.targets, new_ds.dataset.targets), axis=0)
-
+        self.samples.extend(new_ds.samples)
     def set_epoch(self, epoch):
         self.current_epoch = epoch
 

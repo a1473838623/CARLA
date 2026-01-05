@@ -9,23 +9,23 @@ class MyPath(object):
         assert(database in db_names)
 
         if database == 'msl' or database == 'smap':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/MSL_SMAP'
+            return './datasets/MSL_SMAP'
         elif database == 'ucr':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/UCR'
+            return './datasets/UCR'
         elif database == 'yahoo':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/Yahoo'
+            return './datasets/Yahoo'
         elif database == 'smd':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/SMD'
+            return './datasets/SMD'
         elif database == 'swat':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/SWAT'
+            return './datasets/SWAT'
         elif database == 'wadi':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/WADI'
+            return './datasets/WADI'
         elif database == 'kpi':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/KPI'
+            return './datasets/KPI'
         elif database == 'swan':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/Swan'
+            return './datasets/Swan'
         elif database == 'gecco':
-            return '/home/zahraz/hz18_scratch/zahraz/datasets/GECCO'
+            return './datasets/GECCO'
         
         else:
             raise NotImplementedError

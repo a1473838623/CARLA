@@ -106,7 +106,7 @@ class NeighborsDataset(Dataset):
             self.neighbor_transform = transform
        
         dataset.transform = None
-        all_data = dataset.data.to(device)
+        all_data = torch.as_tensor(dataset.data).to(device)
         self.dataset = dataset
 
         NN_indices = N_indices.copy() # Nearest neighbor indices (np.array  [len(dataset) x k])
@@ -116,8 +116,8 @@ class NeighborsDataset(Dataset):
             self.FN_indices = FN_indices[:, -p['num_neighbors']:]
         #assert( int(self.indices.shape[0]/4) == len(self.dataset) )
 
-        self.dataset.data = dataset.data.to(device)
-        self.dataset.targets = dataset.targets.to(device)
+        self.dataset.data = torch.as_tensor(dataset.data).to(device)
+        self.dataset.targets = torch.as_tensor(dataset.targets).to(device)
         num_samples = self.dataset.data.shape[0]
         NN_index = np.array([np.random.choice(self.NN_indices[i], 1)[0] for i in range(num_samples)])
         FN_index = np.array([np.random.choice(self.FN_indices[i], 1)[0] for i in range(num_samples)])
@@ -150,5 +150,6 @@ class NeighborsDataset(Dataset):
         return output
 
     def concat_ds(self, new_ds):
-        self.dataset.data = np.concatenate((self.dataset.data, new_ds.dataset.data), axis=0)
-        self.dataset.targets = np.concatenate((self.dataset.targets, new_ds.dataset.targets), axis=0)
+        self.dataset.data = torch.cat((self.dataset.data, torch.as_tensor(new_ds.dataset.data).to(device)), dim=0)
+        self.dataset.targets = torch.cat((self.dataset.targets, torch.as_tensor(new_ds.dataset.targets).to(device)),
+                                         dim=0)

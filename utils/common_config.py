@@ -135,7 +135,21 @@ def get_train_dataset(p, transform, sanomaly, to_augmented_dataset=False,
         dataset = WADI(p['fname'], train=True, transform=transform, sanomaly=sanomaly,
                       mean_data=None, std_data=None)
         mean, std = dataset.get_info()
-
+    elif p['train_db_name'] == 'psm':
+        from data.PSM import PSM
+        dataset = PSM(p['fname'], train=True, transform=transform, sanomaly=sanomaly,
+                      mean_data=None, std_data=None)
+        mean, std = dataset.get_info()
+    elif p['train_db_name'] == 'nips_ts_swan':
+        from data.NIPS_TS_Swan import NIPS_TS_Swan
+        dataset = NIPS_TS_Swan(p['fname'], train=True, transform=transform, sanomaly=sanomaly,
+                      mean_data=None, std_data=None)
+        mean, std = dataset.get_info()
+    elif p['train_db_name'] == 'nips_ts_water':
+        from data.NIPS_TS_Water import NIPS_TS_Water
+        dataset = NIPS_TS_Water(p['fname'], train=True, transform=transform, sanomaly=sanomaly,
+                      mean_data=None, std_data=None)
+        mean, std = dataset.get_info()
     else:
         raise ValueError('Invalid train dataset {}'.format(p['train_db_name']))
 
@@ -213,7 +227,18 @@ def get_val_dataset(p, transform=None, sanomaly=None, to_neighbors_dataset=False
         from data.WADI import WADI
         dataset = WADI(p['fname'], train=False, transform=transform, sanomaly=sanomaly,
                       mean_data=mean_data, std_data=std_data)
-
+    elif p['val_db_name'] == 'psm':
+        from data.PSM import PSM
+        dataset = PSM(p['fname'], train=False, transform=transform, sanomaly=sanomaly,
+                      mean_data=mean_data, std_data=std_data)
+    elif p['val_db_name'] == 'nips_ts_swan':
+        from data.NIPS_TS_Swan import NIPS_TS_Swan
+        dataset = NIPS_TS_Swan(p['fname'], train=False, transform=transform, sanomaly=sanomaly,
+                               mean_data=mean_data, std_data=std_data)
+    elif p['val_db_name'] == 'nips_ts_water':
+        from data.NIPS_TS_Water import NIPS_TS_Water
+        dataset = NIPS_TS_Water(p['fname'], train=False, transform=transform, sanomaly=sanomaly,
+                                mean_data=mean_data, std_data=std_data)
     else:
         raise ValueError('Invalid validation dataset {}'.format(p['val_db_name']))
 

@@ -95,6 +95,35 @@ def main():
                                           train_dataset.std)
             # base_dataset = get_train_dataset(p, train_transforms, sanomaly, to_augmented_dataset=True,
             #                                  split='train') # Dataset w/o augs for knn eval
+    elif p['train_db_name'] == 'smd':
+        if p['fname'] == 'All':
+            # 1. Define path to the train directory based on image structure
+            file_dir = os.path.join(MyPath.db_root_dir('smd'), 'train')
+
+            # 2. Get list of file IDs (e.g., "machine-1-1") by reading directory and stripping .txt
+            file_list = sorted([x for x in os.listdir(file_dir) if x.endswith('.txt')])
+
+            ii = 0
+            for file_name in file_list:
+                p['fname'] = file_name
+
+                if ii == 0:
+                    train_dataset = get_train_dataset(p, train_transforms, sanomaly, to_augmented_dataset=True)
+                    val_dataset = get_val_dataset(p, val_transforms, sanomaly, False, train_dataset.mean,
+                                                  train_dataset.std)
+                else:
+                    new_train_dataset = get_train_dataset(p, train_transforms, sanomaly, to_augmented_dataset=True)
+                    new_val_dataset = get_val_dataset(p, val_transforms, sanomaly, False, new_train_dataset.mean,
+                                                      new_train_dataset.std)
+
+                    train_dataset.concat_ds(new_train_dataset)
+                    val_dataset.concat_ds(new_val_dataset)
+                ii += 1
+        else:
+            # Standard single file loading
+            train_dataset = get_train_dataset(p, train_transforms, sanomaly, to_augmented_dataset=True)
+            val_dataset = get_val_dataset(p, val_transforms, sanomaly, False, train_dataset.mean,
+                                          train_dataset.std)
 
     elif p['train_db_name'] == 'yahoo':
         filename = os.path.join('/home/zahraz/hz18_scratch/zahraz/datasets/', 'Yahoo/', p['fname'])
@@ -138,8 +167,8 @@ def main():
         # base_dataset = get_train_dataset(p, train_transforms, sanomaly,
         #                                   to_augmented_dataset=True, data=TRAIN_TS, label=train_label)
 
-    elif p['train_db_name'] == 'smd' or p['train_db_name'] == 'kpi' or p['train_db_name'] == 'swat' \
-        or p['train_db_name'] == 'swan' or p['train_db_name'] == 'gecco' or p['train_db_name'] == 'wadi' or p['train_db_name'] == 'ucr':
+    elif p['train_db_name'] == 'kpi' or p['train_db_name'] == 'swat' \
+        or p['train_db_name'] == 'swan' or p['train_db_name'] == 'gecco' or p['train_db_name'] == 'wadi' or p['train_db_name'] == 'ucr' or p['train_db_name'] == 'psm' or p['train_db_name'] == 'nips_ts_swan' or p['train_db_name'] == 'nips_ts_water':
         train_dataset = get_train_dataset(p, train_transforms, sanomaly, to_augmented_dataset=True)
         val_dataset = get_val_dataset(p, val_transforms, sanomaly, False, train_dataset.mean,
                                       train_dataset.std)

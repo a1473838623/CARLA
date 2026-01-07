@@ -62,7 +62,7 @@ def main():
     val_transforms = get_val_transformations1(p)
 
 
-    if p['train_db_name'] == 'MSL' or p['train_db_name'] == 'SMAP':
+    if p['train_db_name'] == 'MSL' or p['train_db_name'] == 'SMAP' and p['fname'] != 'All':
         if p['fname'] == 'All':
             with open(os.path.join(MyPath.db_root_dir('msl'), 'labeled_anomalies.csv'), 'r') as file:
                 csv_reader = pandas.read_csv(file, delimiter=',')
@@ -95,7 +95,7 @@ def main():
                                           train_dataset.std)
             # base_dataset = get_train_dataset(p, train_transforms, sanomaly, to_augmented_dataset=True,
             #                                  split='train') # Dataset w/o augs for knn eval
-    elif p['train_db_name'] == 'smd':
+    elif p['train_db_name'] == 'smd' and p['fname'] != 'All':
         if p['fname'] == 'All':
             # 1. Define path to the train directory based on image structure
             file_dir = os.path.join(MyPath.db_root_dir('smd'), 'train')
@@ -167,8 +167,7 @@ def main():
         # base_dataset = get_train_dataset(p, train_transforms, sanomaly,
         #                                   to_augmented_dataset=True, data=TRAIN_TS, label=train_label)
 
-    elif p['train_db_name'] == 'kpi' or p['train_db_name'] == 'swat' \
-        or p['train_db_name'] == 'swan' or p['train_db_name'] == 'gecco' or p['train_db_name'] == 'wadi' or p['train_db_name'] == 'ucr' or p['train_db_name'] == 'psm' or p['train_db_name'] == 'nips_ts_swan' or p['train_db_name'] == 'nips_ts_water':
+    else:
         train_dataset = get_train_dataset(p, train_transforms, sanomaly, to_augmented_dataset=True)
         val_dataset = get_val_dataset(p, val_transforms, sanomaly, False, train_dataset.mean,
                                       train_dataset.std)

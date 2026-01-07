@@ -82,9 +82,14 @@ def get_train_dataset(p, transform, sanomaly, to_augmented_dataset=False,
                       to_neighbors_dataset=False, split=None, data=None, label=None):
     # Base dataset
     mean, std = 0, 0
-    if p['train_db_name'] == 'MSL' or p['train_db_name'] == 'SMAP':
+    if p['train_db_name'] == 'MSL':
         from data.MSL import MSL
         dataset = MSL(p['fname'], train=True, transform=transform, sanomaly=sanomaly,
+                      mean_data=None, std_data=None)
+        mean, std = dataset.get_info()
+    elif p['train_db_name'] == 'SMAP':
+        from data.SMAP import SMAP
+        dataset = SMAP(p['fname'], train=True, transform=transform, sanomaly=sanomaly,
                       mean_data=None, std_data=None)
         mean, std = dataset.get_info()
 
@@ -183,11 +188,14 @@ def get_aug_train_dataset(p, transform, to_neighbors_dataset=False):
 def get_val_dataset(p, transform=None, sanomaly=None, to_neighbors_dataset=False,
                     mean_data=None, std_data=None, data=None, label=None):
     # Base dataset
-    if p['val_db_name'] == 'MSL' or p['val_db_name'] == 'SMAP':
+    if p['val_db_name'] == 'MSL':
         from data.MSL import MSL
         dataset = MSL(p['fname'], train=False, transform=transform, sanomaly=sanomaly,
                       mean_data=mean_data, std_data=std_data)
-
+    elif p['val_db_name'] == 'SMAP':
+        from data.SMAP import SMAP
+        dataset = SMAP(p['fname'], train=False, transform=transform, sanomaly=sanomaly,
+                      mean_data=mean_data, std_data=std_data)
     elif p['train_db_name'] == 'yahoo':
         from data.Yahoo import Yahoo
         dataset = Yahoo(p['fname'], train=False, transform=transform, sanomaly=sanomaly,

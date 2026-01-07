@@ -29,16 +29,28 @@ class SMD(Dataset):
         labels = []
         wsz, stride = 200, 5
 
-        if self.train:
-            self.base_folder += 'train'
+        if fname == 'All':
+            # 新格式：加载合并的单文件
+            if self.train:
+                file_path = os.path.join(self.root, 'SMD_train.npy')
+                temp = np.load(file_path)
+            else:
+                file_path = os.path.join(self.root, 'SMD_test.npy')
+                temp = np.load(file_path)
+                label_path = os.path.join(self.root, 'SMD_test_label.npy')
+                labels = np.load(label_path)
         else:
-            self.base_folder += 'test'
-            labels = pd.read_csv(os.path.join(self.root, 'test_label', fname))
-            labels = np.asarray(labels)
+            # 旧格式：加载单机器文件（保持原逻辑）
+            if self.train:
+                self.base_folder += 'train'
+            else:
+                self.base_folder += 'test'
+                labels = pd.read_csv(os.path.join(self.root, 'test_label', fname))
+                labels = np.asarray(labels)
 
-        file_path = os.path.join(self.root, self.base_folder, fname)
-        temp = pd.read_csv(file_path)
-        temp = np.asarray(temp)
+            file_path = os.path.join(self.root, self.base_folder, fname)
+            temp = pd.read_csv(file_path)
+            temp = np.asarray(temp)
 
         if np.any(sum(np.isnan(temp))!=0):
             print('Data contains NaN which replaced with zero')

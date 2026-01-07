@@ -37,7 +37,7 @@ class NIPS_TS_Swan(Dataset):
         if self.train:
             self.mean = scaler.mean_
             self.std = scaler.scale_
-            data = scaler.transform(train_data_raw)
+            data = train_data_raw
             labels = np.zeros(len(data))
         else:
             self.mean, self.std = mean_data, std_data

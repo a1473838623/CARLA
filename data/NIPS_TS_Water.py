@@ -37,7 +37,7 @@ class NIPS_TS_Water(Dataset):
         if self.train:
             self.mean = scaler.mean_
             self.std = scaler.scale_
-            data = scaler.transform(train_data_raw)
+            data = train_data_raw
             # Assuming train data has no anomalies or we don't have train labels file loaded here
             labels = np.zeros(len(data))
         else:

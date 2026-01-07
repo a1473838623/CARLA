@@ -41,7 +41,7 @@ class PSM(Dataset):
         if self.train:
             self.mean = scaler.mean_
             self.std = scaler.scale_
-            data = scaler.transform(train_data)
+            data = train_data
             # PSM train set usually doesn't have labels provided in standard benchmarks, assumed all normal
             # However, if labels exist, they should be loaded. Standard PSM assumes unsupervised train.
             labels = np.zeros(len(data))

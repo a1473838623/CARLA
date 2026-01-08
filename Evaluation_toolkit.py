@@ -1,8 +1,10 @@
 import numpy as np
 import pandas as pd
 import os
+
 os.environ['NUMBA_DISABLE_CUDA'] = '1'
 import argparse
+import ast
 
 from metrics.affiliation.generics import convert_vector_to_events
 from metrics.affiliation.metrics import pr_from_events
@@ -12,6 +14,294 @@ from sklearn.metrics import (
     roc_auc_score, average_precision_score, confusion_matrix,
     precision_recall_curve, auc
 )
+
+# ============================================================
+# 数据集配置
+# ============================================================
+DATASET_CONFIG = {
+    'MSL': {
+        'window_size': 200,
+        'stride': 1,
+        'label_type': 'npy',  # MSL_test_label.npy
+        'label_file': '{dataset}_test_label.npy',
+        'data_subdir': '',
+    },
+    'SMAP': {
+        'window_size': 200,
+        'stride': 1,
+        'label_type': 'npy',
+        'label_file': '{dataset}_test_label.npy',
+        'data_subdir': '',
+    },
+    'SMD': {
+        'window_size': 200,
+        'stride': 5,
+        'label_type': 'npy',  # SMD_test_label.npy for All mode
+        'label_file': '{dataset}_test_label.npy',
+        'data_subdir': '',
+    },
+    'PSM': {
+        'window_size': 100,
+        'stride': 10,
+        'label_type': 'csv_column',
+        'label_file': 'test_label.csv',
+        'label_column': 1,  # 第二列（跳过时间戳）
+        'data_subdir': '',
+    },
+    'SWAT': {
+        'window_size': 200,
+        'stride': 10,
+        'label_type': 'csv_embedded',  # 标签嵌入在测试数据文件中
+        'label_file': '{fname}_test.csv',
+        'label_column': 'Normal/Attack',
+        'data_subdir': '',
+    },
+    'NIPS_TS_Swan': {
+        'window_size': 100,
+        'stride': 10,
+        'label_type': 'npy',
+        'label_file': 'NIPS_TS_Swan_test_label.npy',
+        'data_subdir': '',
+    },
+    'NIPS_TS_Water': {
+        'window_size': 100,
+        'stride': 10,
+        'label_type': 'npy',
+        'label_file': 'NIPS_TS_Water_test_label.npy',
+        'data_subdir': '',
+    },
+}
+
+
+# ============================================================
+# 窗口级别 -> 点级别 转换函数
+# ============================================================
+def window_to_point_scores(window_scores, window_size, stride, total_points, method='mean'):
+    """
+    将窗口级别的预测分数转换为点级别的预测分数
+
+    Args:
+        window_scores: 每个窗口的预测分数，shape=(n_windows,)
+        window_size: 滑动窗口大小
+        stride: 滑动步长
+        total_points: 原始时间序列的总点数
+        method: 转换方法 ('mean', 'max', 'last', 'first', 'center')
+
+    Returns:
+        point_scores: 每个点的预测分数，shape=(total_points,)
+    """
+    n_windows = len(window_scores)
+
+    if method == 'last':
+        # 每个窗口的预测分配给窗口的最后一个点
+        point_scores = np.zeros(total_points)
+        counts = np.zeros(total_points)
+
+        for i in range(n_windows):
+            end_point = i * stride + window_size - 1
+            if end_point < total_points:
+                point_scores[end_point] = window_scores[i]
+                counts[end_point] = 1
+
+        # 填充没有覆盖到的点
+        for i in range(total_points):
+            if counts[i] == 0:
+                for j in range(i + 1, total_points):
+                    if counts[j] > 0:
+                        point_scores[i] = point_scores[j]
+                        break
+
+        return point_scores
+
+    elif method == 'first':
+        point_scores = np.zeros(total_points)
+        counts = np.zeros(total_points)
+
+        for i in range(n_windows):
+            start_point = i * stride
+            if start_point < total_points:
+                point_scores[start_point] = window_scores[i]
+                counts[start_point] = 1
+
+        for i in range(total_points - 1, -1, -1):
+            if counts[i] == 0:
+                for j in range(i - 1, -1, -1):
+                    if counts[j] > 0:
+                        point_scores[i] = point_scores[j]
+                        break
+
+        return point_scores
+
+    elif method == 'center':
+        point_scores = np.zeros(total_points)
+        counts = np.zeros(total_points)
+
+        for i in range(n_windows):
+            center_point = i * stride + window_size // 2
+            if center_point < total_points:
+                point_scores[center_point] += window_scores[i]
+                counts[center_point] += 1
+
+        mask = counts > 0
+        point_scores[mask] /= counts[mask]
+
+        # 填充边界点
+        first_valid = np.argmax(counts > 0)
+        last_valid = total_points - 1 - np.argmax(counts[::-1] > 0)
+
+        for i in range(first_valid):
+            point_scores[i] = point_scores[first_valid]
+        for i in range(last_valid + 1, total_points):
+            point_scores[i] = point_scores[last_valid]
+
+        return point_scores
+
+    else:  # 'mean' or 'max'
+        if method == 'mean':
+            point_scores = np.zeros(total_points)
+            counts = np.zeros(total_points)
+
+            for i in range(n_windows):
+                start = i * stride
+                end = min(start + window_size, total_points)
+                point_scores[start:end] += window_scores[i]
+                counts[start:end] += 1
+
+            counts[counts == 0] = 1
+            point_scores /= counts
+
+        else:  # 'max'
+            point_scores = np.full(total_points, -np.inf)
+
+            for i in range(n_windows):
+                start = i * stride
+                end = min(start + window_size, total_points)
+                point_scores[start:end] = np.maximum(
+                    point_scores[start:end],
+                    window_scores[i]
+                )
+
+            point_scores[point_scores == -np.inf] = 0
+
+        return point_scores
+
+
+# ============================================================
+# 加载点级别真实标签（支持多种数据集格式）
+# ============================================================
+def load_point_labels(ds_name, fname='All', data_root='data'):
+    """
+    从原始数据集加载点级别的真实标签
+
+    Args:
+        ds_name: 数据集名称
+        fname: 文件名
+        data_root: 数据根目录
+
+    Returns:
+        point_labels: 点级别的真实标签
+        total_points: 总点数
+    """
+    config = DATASET_CONFIG.get(ds_name)
+    if config is None:
+        raise ValueError(f"Unknown dataset: {ds_name}. Available: {list(DATASET_CONFIG.keys())}")
+
+    # 确定数据目录
+    ds_dir = os.path.join(data_root, ds_name.lower())
+    if not os.path.exists(ds_dir):
+        # 尝试其他可能的目录名
+        alt_dirs = [
+            os.path.join(data_root, ds_name),
+            os.path.join(data_root, ds_name.upper()),
+            os.path.join(data_root, ds_name.replace('_', '')),
+        ]
+        for alt in alt_dirs:
+            if os.path.exists(alt):
+                ds_dir = alt
+                break
+
+    label_type = config['label_type']
+
+    # ============================================================
+    # NPY 格式：MSL, SMAP, SMD, NIPS_TS_Swan, NIPS_TS_Water
+    # ============================================================
+    if label_type == 'npy':
+        label_file = config['label_file'].format(dataset=ds_name)
+        label_path = os.path.join(ds_dir, label_file)
+
+        if os.path.exists(label_path):
+            labels = np.load(label_path)
+            return labels.astype(int), len(labels)
+
+        # 备选：对于 MSL/SMAP，尝试从 labeled_anomalies.csv 解析
+        if ds_name in ['MSL', 'SMAP'] and fname != 'All':
+            csv_path = os.path.join(ds_dir, 'labeled_anomalies.csv')
+            if os.path.exists(csv_path):
+                csv_reader = pd.read_csv(csv_path)
+                data_info = csv_reader[csv_reader['chan_id'] == fname]
+
+                if len(data_info) == 0:
+                    raise ValueError(f"Channel {fname} not found in {csv_path}")
+
+                labels = []
+                for index, row in data_info.iterrows():
+                    anomalies = ast.literal_eval(row['anomaly_sequences'])
+                    length = row.iloc[-1]
+                    label = np.zeros([int(length)], dtype=int)
+                    for anomaly in anomalies:
+                        label[anomaly[0]:anomaly[1] + 1] = 1
+                    labels.extend(label)
+
+                return np.asarray(labels), len(labels)
+
+        # 备选：对于 SMD，尝试从 test_label 目录加载
+        if ds_name == 'SMD' and fname != 'All':
+            label_path = os.path.join(ds_dir, 'test_label', fname)
+            if os.path.exists(label_path):
+                labels = pd.read_csv(label_path, header=None).values.flatten()
+                return labels.astype(int), len(labels)
+
+        raise FileNotFoundError(f"Label file not found: {label_path}")
+
+    # ============================================================
+    # CSV 列格式：PSM
+    # ============================================================
+    elif label_type == 'csv_column':
+        label_file = config['label_file']
+        label_path = os.path.join(ds_dir, label_file)
+
+        if os.path.exists(label_path):
+            df = pd.read_csv(label_path)
+            col_idx = config.get('label_column', 1)
+            if isinstance(col_idx, int):
+                labels = df.iloc[:, col_idx].values
+            else:
+                labels = df[col_idx].values
+            labels = np.nan_to_num(labels).flatten().astype(int)
+            return labels, len(labels)
+
+        raise FileNotFoundError(f"Label file not found: {label_path}")
+
+    # ============================================================
+    # CSV 嵌入格式：SWAT
+    # ============================================================
+    elif label_type == 'csv_embedded':
+        label_file = config['label_file'].format(fname=fname)
+        label_path = os.path.join(ds_dir, label_file)
+
+        if os.path.exists(label_path):
+            df = pd.read_csv(label_path)
+            label_col = config.get('label_column', 'Normal/Attack')
+            labels = df[label_col].values
+            # SWAT 的标签可能是字符串 'Normal'/'Attack' 或数字
+            if labels.dtype == object:
+                labels = np.where(labels == 'Normal', 0, 1)
+            return labels.astype(int), len(labels)
+
+        raise FileNotFoundError(f"Label file not found: {label_path}")
+
+    else:
+        raise ValueError(f"Unknown label_type: {label_type}")
 
 
 # ============================================================
@@ -51,6 +341,10 @@ def compute_affiliation_metrics(y_true, y_pred):
     events_pred = convert_vector_to_events(y_pred)
     events_gt = convert_vector_to_events(y_true)
     Trange = (0, len(y_true))
+
+    if len(events_pred) == 0 or len(events_gt) == 0:
+        return 0.0, 0.0, 0.0
+
     affiliation = pr_from_events(events_pred, events_gt, Trange)
 
     aff_pre = affiliation['precision']
@@ -92,20 +386,23 @@ def compute_label_based_metrics(y_true, y_pred):
 
 
 def compute_score_based_metrics(y_true, scores, slidingWindow=100):
-    """
-    计算基于分数的指标（不受 PA 影响）：
-    AUC-ROC, AUC-PR, R_AUC_ROC, R_AUC_PR, VUS_ROC, VUS_PR, F1_AUC
-    """
+    """计算基于分数的指标"""
     result = {}
 
-    # AUC-ROC 和 AUC-PR
-    result['AUC-ROC'] = roc_auc_score(y_true, scores)
-    result['AUC-PR'] = average_precision_score(y_true, scores)
+    try:
+        result['AUC-ROC'] = roc_auc_score(y_true, scores)
+        result['AUC-PR'] = average_precision_score(y_true, scores)
+    except ValueError as e:
+        print(f"  Warning: AUC calculation failed: {e}")
+        result['AUC-ROC'] = 0
+        result['AUC-PR'] = 0
 
-    # F1-AUC
-    result['F1_AUC'] = compute_f1_auc(y_true, scores)
+    try:
+        result['F1_AUC'] = compute_f1_auc(y_true, scores)
+    except Exception as e:
+        print(f"  Warning: F1_AUC calculation failed: {e}")
+        result['F1_AUC'] = 0
 
-    # R_AUC 和 VUS
     try:
         vus_metrics = get_range_vus_roc(
             score=scores,
@@ -116,7 +413,6 @@ def compute_score_based_metrics(y_true, scores, slidingWindow=100):
         result['R_AUC_PR'] = vus_metrics['R_AUC_PR']
         result['VUS_ROC'] = vus_metrics['VUS_ROC']
         result['VUS_PR'] = vus_metrics['VUS_PR']
-
     except Exception as e:
         print(f"  Warning: VUS/R_AUC calculation failed: {e}")
         result['R_AUC_ROC'] = 0
@@ -142,43 +438,81 @@ def find_best_threshold(y_true, scores):
 
 
 # ============================================================
-# 单通道评估函数
+# 评估函数
 # ============================================================
-def evaluate_single_channel(df_train, df_test, use_pa, slidingWindow):
-    """评估单个通道，返回所有指标"""
+def evaluate_point_level(
+        window_scores,
+        point_labels,
+        window_size,
+        stride,
+        use_pa=False,
+        slidingWindow=100,
+        score_method='mean'
+):
+    """点级别评估"""
     result = {}
+    total_points = len(point_labels)
 
-    cl_num = df_train.shape[1] - 1
-
-    # 确定正常类别
-    df_train['pred'] = df_train[df_train.columns[0:cl_num]].idxmax(axis=1)
-    score_col = df_train['pred'].value_counts().idxmax()
-
-    # 准备数据
-    y_true = np.where(df_test['Class'] == 0, 0, 1)
-    scores = (1 - df_test[score_col]).values
+    # 转换分数到点级别
+    point_scores = window_to_point_scores(
+        window_scores, window_size, stride, total_points, method=score_method
+    )
 
     # 找最佳阈值
-    best_threshold = find_best_threshold(y_true, scores)
-    y_pred_raw = (scores >= best_threshold).astype(int)
-
+    best_threshold = find_best_threshold(point_labels, point_scores)
     result['threshold'] = best_threshold
 
-    # 基于分数的指标（不受 PA 影响）
-    score_metrics = compute_score_based_metrics(y_true, scores, slidingWindow)
+    # 生成点级别预测标签
+    point_pred_raw = (point_scores >= best_threshold).astype(int)
+
+    # 基于分数的指标
+    score_metrics = compute_score_based_metrics(point_labels, point_scores, slidingWindow)
     result.update(score_metrics)
 
     # 基于标签的指标（可选 PA）
     if use_pa:
-        y_pred = point_adjustment(y_true, y_pred_raw)
+        point_pred = point_adjustment(point_labels, point_pred_raw)
     else:
-        y_pred = y_pred_raw
+        point_pred = point_pred_raw
 
-    label_metrics = compute_label_based_metrics(y_true, y_pred)
+    label_metrics = compute_label_based_metrics(point_labels, point_pred)
     result.update(label_metrics)
 
     # Affiliation 指标
-    aff_pre, aff_rec, aff_f1 = compute_affiliation_metrics(y_true, y_pred)
+    aff_pre, aff_rec, aff_f1 = compute_affiliation_metrics(point_labels, point_pred)
+    result['Aff-Pre'] = aff_pre
+    result['Aff-Rec'] = aff_rec
+    result['Aff-F1'] = aff_f1
+
+    return result
+
+
+def evaluate_window_level(
+        window_scores,
+        window_labels,
+        use_pa=False,
+        slidingWindow=100
+):
+    """窗口级别评估（原有逻辑）"""
+    result = {}
+
+    best_threshold = find_best_threshold(window_labels, window_scores)
+    result['threshold'] = best_threshold
+
+    window_pred_raw = (window_scores >= best_threshold).astype(int)
+
+    score_metrics = compute_score_based_metrics(window_labels, window_scores, slidingWindow)
+    result.update(score_metrics)
+
+    if use_pa:
+        window_pred = point_adjustment(window_labels, window_pred_raw)
+    else:
+        window_pred = window_pred_raw
+
+    label_metrics = compute_label_based_metrics(window_labels, window_pred)
+    result.update(label_metrics)
+
+    aff_pre, aff_rec, aff_f1 = compute_affiliation_metrics(window_labels, window_pred)
     result['Aff-Pre'] = aff_pre
     result['Aff-Rec'] = aff_rec
     result['Aff-F1'] = aff_f1
@@ -187,63 +521,149 @@ def evaluate_single_channel(df_train, df_test, use_pa, slidingWindow):
 
 
 # ============================================================
-# 统计汇总函数
+# 主评估函数
 # ============================================================
-def compute_macro_metrics(res_df):
-    """计算 Macro 平均（每通道平均）"""
-    metric_cols = [
-        'Precision', 'Recall', 'F-score', 'ACC',
-        'Aff-Pre', 'Aff-Rec', 'Aff-F1',
-        'AUC-ROC', 'AUC-PR', 'R_AUC_ROC', 'R_AUC_PR',
-        'VUS_ROC', 'VUS_PR', 'F1_AUC'
+def evaluate_dataset(
+        ds_name,
+        fname='All',
+        use_pa=False,
+        slidingWindow=100,
+        eval_level='point',
+        score_method='mean',
+        data_root='data',
+        result_root='results'
+):
+    """
+    评估数据集
+
+    Args:
+        ds_name: 数据集名称
+        fname: 文件名
+        use_pa: 是否使用 Point Adjustment
+        slidingWindow: VUS/R_AUC 的滑动窗口大小
+        eval_level: 评估级别 ('point' 或 'window')
+        score_method: 分数转换方法
+        data_root: 数据根目录
+        result_root: 结果根目录
+    """
+    # 获取数据集配置
+    config = DATASET_CONFIG.get(ds_name)
+    if config is None:
+        print(f"Warning: Unknown dataset {ds_name}, using default config")
+        config = {'window_size': 200, 'stride': 1}
+
+    window_size = config['window_size']
+    stride = config['stride']
+
+    print("=" * 60)
+    print(f"Dataset: {ds_name}")
+    print(f"Fname: {fname}")
+    print(f"Evaluation Level: {eval_level}")
+    print(f"Window Size: {window_size}, Stride: {stride}")
+    print(f"Score Method: {score_method}")
+    print(f"Point Adjustment (PA): {'Enabled' if use_pa else 'Disabled'}")
+    print("=" * 60)
+
+    # 查找结果文件
+    possible_paths = [
+        os.path.join(result_root, ds_name, fname, 'classification'),
+        os.path.join(result_root, ds_name, 'classification'),
+        os.path.join(result_root, f'{ds_name}_{fname}', 'classification'),
     ]
 
-    macro = {}
-    n_samples = len(res_df)
+    result_path = None
+    for p in possible_paths:
+        train_file = os.path.join(p, 'classification_trainprobs.csv')
+        test_file = os.path.join(p, 'classification_testprobs.csv')
+        if os.path.exists(train_file) and os.path.exists(test_file):
+            result_path = p
+            break
 
-    for col in metric_cols:
-        if col in res_df.columns:
-            macro[f'{col}_mean'] = res_df[col].mean()
-            macro[f'{col}_std'] = res_df[col].std() if n_samples > 1 else 0.0
+    if result_path is None:
+        print(f"Error: Cannot find result files for {ds_name}/{fname}")
+        print("Searched paths:")
+        for p in possible_paths:
+            print(f"  - {p}")
+        return None
 
-    return macro
+    print(f"Found results at: {result_path}")
+
+    # 加载预测结果
+    df_train = pd.read_csv(os.path.join(result_path, 'classification_trainprobs.csv'))
+    df_test = pd.read_csv(os.path.join(result_path, 'classification_testprobs.csv'))
+
+    print(f"Train windows: {len(df_train)}, Test windows: {len(df_test)}")
+
+    # 提取窗口分数
+    cl_num = df_train.shape[1] - 1
+    df_train['pred'] = df_train[df_train.columns[0:cl_num]].idxmax(axis=1)
+    score_col = df_train['pred'].value_counts().idxmax()
+
+    window_scores = (1 - df_test[score_col]).values
+    window_labels = np.where(df_test['Class'] == 0, 0, 1)
+
+    # 加载点级别标签（如果需要）
+    point_labels = None
+    if eval_level == 'point':
+        try:
+            point_labels, total_points = load_point_labels(ds_name, fname, data_root)
+            print(
+                f"Loaded point labels: {total_points} points, {point_labels.sum()} anomalies ({100 * point_labels.mean():.2f}%)")
+        except Exception as e:
+            print(f"Warning: Could not load point labels: {e}")
+            print("Falling back to window-level evaluation")
+            eval_level = 'window'
+
+    # 评估
+    if eval_level == 'point' and point_labels is not None:
+        result = evaluate_point_level(
+            window_scores=window_scores,
+            point_labels=point_labels,
+            window_size=window_size,
+            stride=stride,
+            use_pa=use_pa,
+            slidingWindow=slidingWindow,
+            score_method=score_method
+        )
+    else:
+        result = evaluate_window_level(
+            window_scores=window_scores,
+            window_labels=window_labels,
+            use_pa=use_pa,
+            slidingWindow=slidingWindow
+        )
+
+    result['name'] = fname
+    result['eval_level'] = eval_level
+
+    # 打印结果
+    print_result(result, f"{ds_name}/{fname}", use_pa, eval_level)
+
+    # 保存结果
+    output_cols = [
+        'name', 'eval_level', 'Precision', 'Recall', 'F-score',
+        'AUC-ROC', 'AUC-PR', 'ACC',
+        'Aff-Pre', 'Aff-Rec', 'Aff-F1',
+        'R_AUC_ROC', 'R_AUC_PR', 'VUS_ROC', 'VUS_PR', 'F1_AUC'
+    ]
+
+    res_df = pd.DataFrame([result])
+    pa_suffix = '_PA' if use_pa else '_noPA'
+    output_dir = os.path.join(result_root, ds_name)
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, f'{ds_name}_{fname}_{eval_level}_evaluation{pa_suffix}.csv')
+
+    res_df[[c for c in output_cols if c in res_df.columns]].to_csv(output_file, index=False)
+    print(f"\nResults saved to {output_file}")
+
+    return result
 
 
-def compute_micro_metrics(res_df):
-    """计算 Micro 平均（汇总 TP/FP/FN/TN）"""
-    if not all(col in res_df.columns for col in ['TP', 'TN', 'FP', 'FN']):
-        return {}
-
-    sum_tp = res_df['TP'].sum()
-    sum_tn = res_df['TN'].sum()
-    sum_fp = res_df['FP'].sum()
-    sum_fn = res_df['FN'].sum()
-
-    micro_pre = sum_tp / (sum_tp + sum_fp) if (sum_tp + sum_fp) > 0 else 0
-    micro_rec = sum_tp / (sum_tp + sum_fn) if (sum_tp + sum_fn) > 0 else 0
-    micro_f1 = 2 * micro_pre * micro_rec / (micro_pre + micro_rec) \
-        if (micro_pre + micro_rec) > 0 else 0
-    micro_acc = (sum_tp + sum_tn) / (sum_tp + sum_tn + sum_fp + sum_fn)
-
-    return {
-        'Precision': micro_pre,
-        'Recall': micro_rec,
-        'F-score': micro_f1,
-        'ACC': micro_acc,
-        'TP': int(sum_tp),
-        'TN': int(sum_tn),
-        'FP': int(sum_fp),
-        'FN': int(sum_fn)
-    }
-
-
-# ============================================================
-# 打印函数
-# ============================================================
-def print_single_result(result, name, use_pa):
-    """打印单个结果（All 模式或单通道）"""
+def print_result(result, name, use_pa, eval_level):
+    """打印评估结果"""
     print(f"\n{'=' * 60}")
     print(f"Result: {name}")
+    print(f"Evaluation Level: {eval_level.upper()}")
     print(f"Point Adjustment: {'Enabled' if use_pa else 'Disabled'}")
     print(f"{'=' * 60}")
 
@@ -259,7 +679,7 @@ def print_single_result(result, name, use_pa):
     print(f"  Aff-Rec     : {result['Aff-Rec']:.4f}")
     print(f"  Aff-F1      : {result['Aff-F1']:.4f}")
 
-    print("\n[Score-based metrics (PA not applicable)]")
+    print("\n[Score-based metrics]")
     print(f"  AUC-ROC     : {result['AUC-ROC']:.4f}")
     print(f"  AUC-PR      : {result['AUC-PR']:.4f}")
     print(f"  R_AUC_ROC   : {result['R_AUC_ROC']:.4f}")
@@ -269,421 +689,169 @@ def print_single_result(result, name, use_pa):
     print(f"  F1_AUC      : {result['F1_AUC']:.4f}")
 
 
-def print_multi_channel_summary(macro, micro, n_channels, use_pa):
-    """打印多通道汇总结果"""
-    print(f"\n{'=' * 60}")
-    print(f"Multi-Channel Summary ({n_channels} channels)")
-    print(f"Point Adjustment: {'Enabled' if use_pa else 'Disabled'}")
-    print(f"{'=' * 60}")
-
-    # Macro 平均
-    print(f"\n[MACRO-averaged metrics (mean ± std across {n_channels} channels)]")
-
-    print(f"  --- Label-based" + (" (PA applied)" if use_pa else " (PA not applied)") + " ---")
-    for metric in ['Precision', 'Recall', 'F-score', 'ACC']:
-        mean_val = macro.get(f'{metric}_mean', 0)
-        std_val = macro.get(f'{metric}_std', 0)
-        if n_channels > 1:
-            print(f"  {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
-        else:
-            print(f"  {metric:12s}: {mean_val:.4f}")
-
-    print(f"  --- Affiliation" + (" (PA applied)" if use_pa else " (PA not applied)") + " ---")
-    for metric in ['Aff-Pre', 'Aff-Rec', 'Aff-F1']:
-        mean_val = macro.get(f'{metric}_mean', 0)
-        std_val = macro.get(f'{metric}_std', 0)
-        if n_channels > 1:
-            print(f"  {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
-        else:
-            print(f"  {metric:12s}: {mean_val:.4f}")
-
-    print("  --- Score-based (PA not applicable) ---")
-    for metric in ['AUC-ROC', 'AUC-PR', 'R_AUC_ROC', 'R_AUC_PR', 'VUS_ROC', 'VUS_PR', 'F1_AUC']:
-        mean_val = macro.get(f'{metric}_mean', 0)
-        std_val = macro.get(f'{metric}_std', 0)
-        if n_channels > 1:
-            print(f"  {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
-        else:
-            print(f"  {metric:12s}: {mean_val:.4f}")
-
-    # Micro 平均
-    print(f"\n[MICRO-averaged metrics (aggregate TP/FP/FN/TN)" + \
-          (" (PA applied)]" if use_pa else " (PA not applied)]"))
-    print(f"  Precision   : {micro['Precision']:.4f}")
-    print(f"  Recall      : {micro['Recall']:.4f}")
-    print(f"  F-score     : {micro['F-score']:.4f}")
-    print(f"  ACC         : {micro['ACC']:.4f}")
-    print(f"  (Total: TP={micro['TP']}, TN={micro['TN']}, FP={micro['FP']}, FN={micro['FN']})")
-
-
 # ============================================================
-# 【新增】查找 All 模式结果文件的函数
+# 批量评估
 # ============================================================
-def find_all_mode_files(ds_name):
-    """
-    查找 All 模式的结果文件，支持多种可能的路径结构
-    返回 (train_path, test_path) 或 (None, None)
-    """
-    possible_paths = [
-        # 路径格式 1: results/{ds_name}/All/classification/
-        (f"results/{ds_name}/All/classification/classification_trainprobs.csv",
-         f"results/{ds_name}/All/classification/classification_testprobs.csv"),
-        # 路径格式 2: results/{ds_name}/classification/ (直接在数据集目录下)
-        (f"results/{ds_name}/classification/classification_trainprobs.csv",
-         f"results/{ds_name}/classification/classification_testprobs.csv"),
-        # 路径格式 3: results/{ds_name}_All/classification/
-        (f"results/{ds_name}_All/classification/classification_trainprobs.csv",
-         f"results/{ds_name}_All/classification/classification_testprobs.csv"),
-    ]
+def evaluate_all_datasets(
+        datasets=None,
+        eval_level='point',
+        score_method='mean',
+        use_pa=False,
+        data_root='data',
+        result_root='results'
+):
+    """批量评估多个数据集"""
+    if datasets is None:
+        datasets = list(DATASET_CONFIG.keys())
 
-    for train_path, test_path in possible_paths:
-        if os.path.exists(train_path) and os.path.exists(test_path):
-            return train_path, test_path
+    all_results = []
 
-    return None, None
-
-
-# ============================================================
-# 【新增】检测数据集的结果结构
-# ============================================================
-def detect_result_structure(ds_name):
-    """
-    检测结果目录的结构
-    返回: 'all_only', 'single_only', 'both', 'none'
-    """
-    path = os.path.join('results/', ds_name)
-
-    if not os.path.exists(path):
-        return 'none'
-
-    # 检查是否有 All 模式结果
-    train_all, test_all = find_all_mode_files(ds_name)
-    has_all = train_all is not None
-
-    # 检查是否有单通道结果
-    has_single = False
-    if os.path.exists(path):
-        for item in os.listdir(path):
-            item_path = os.path.join(path, item)
-            if os.path.isdir(item_path) and item not in ['All', 'classification']:
-                # 检查是否有 classification 子目录
-                class_path = os.path.join(item_path, 'classification')
-                if os.path.exists(class_path):
-                    has_single = True
-                    break
-
-    if has_all and has_single:
-        return 'both'
-    elif has_all:
-        return 'all_only'
-    elif has_single:
-        return 'single_only'
-    else:
-        return 'none'
-
-
-# ============================================================
-# 主评估函数
-# ============================================================
-def evaluate_dataset(ds_name, use_pa=False, slidingWindow=100, mode='auto', fname='All'):
-    """
-    评估数据集
-
-    Args:
-        ds_name: 数据集名称 (如 'MSL', 'SMAP')
-        use_pa: 是否对基于标签的指标使用 PA 调整
-        slidingWindow: VUS/R_AUC 的滑动窗口大小
-        mode: 评估模式
-            - 'auto': 自动检测（根据目录结构）
-            - 'single': 单通道模式（逐个通道评估）
-            - 'all': All 模式（多通道聚合后的单一结果）
-        fname: 文件名，'All' 表示评估所有通道聚合结果
-    """
-    print("=" * 60)
-    print(f"Dataset: {ds_name}")
-    print(f"Fname: {fname}")
-    print(f"Point Adjustment (PA): {'Enabled' if use_pa else 'Disabled'}")
-    print(f"Sliding Window: {slidingWindow}")
-    print(f"Mode: {mode}")
-    print("=" * 60)
-
-    path = os.path.join('results/', ds_name)
-
-    # ============================================================
-    # 【修改】改进的模式检测逻辑
-    # ============================================================
-    if mode == 'auto':
-        structure = detect_result_structure(ds_name)
-        print(f"Detected structure: {structure}")
-
-        if fname == 'All':
-            # 用户指定了 All，优先使用 all 模式
-            if structure in ['all_only', 'both']:
-                mode = 'all'
-            else:
-                print(f"Warning: fname='All' but no All mode results found, falling back to single mode")
-                mode = 'single'
-        else:
-            # 用户指定了具体文件名，使用 single 模式
-            mode = 'single'
-
-        print(f"Selected mode: {mode}")
-
-    # ============================================================
-    # All 模式：评估多通道聚合后的单一结果
-    # ============================================================
-    if mode == 'all':
-        print("\n[All Mode] Evaluating aggregated multi-channel result...")
-
-        # 【修改】使用新的文件查找函数
-        train_path, test_path = find_all_mode_files(ds_name)
-
-        if train_path is None:
-            print(f"Error: Cannot find All mode result files for {ds_name}")
-            print("Searched paths:")
-            print(f"  - results/{ds_name}/All/classification/")
-            print(f"  - results/{ds_name}/classification/")
-            print(f"  - results/{ds_name}_All/classification/")
-            return None, None
-
-        print(f"Found train file: {train_path}")
-        print(f"Found test file: {test_path}")
+    for ds_name in datasets:
+        print(f"\n{'#' * 60}")
+        print(f"# Evaluating: {ds_name}")
+        print(f"{'#' * 60}")
 
         try:
-            df_train = pd.read_csv(train_path)
-            df_test = pd.read_csv(test_path)
+            result = evaluate_dataset(
+                ds_name=ds_name,
+                fname='All',
+                use_pa=use_pa,
+                eval_level=eval_level,
+                score_method=score_method,
+                data_root=data_root,
+                result_root=result_root
+            )
+            if result:
+                result['dataset'] = ds_name
+                all_results.append(result)
         except Exception as e:
-            print(f"Error reading files: {e}")
-            return None, None
+            print(f"Error evaluating {ds_name}: {e}")
+            import traceback
+            traceback.print_exc()
 
-        result = evaluate_single_channel(df_train, df_test, use_pa, slidingWindow)
-        result['name'] = 'All'
+    # 汇总表格
+    if all_results:
+        print("\n" + "=" * 80)
+        print("Summary")
+        print("=" * 80)
 
-        # 打印结果
-        print_single_result(result, f"{ds_name} (All channels aggregated)", use_pa)
+        summary_df = pd.DataFrame(all_results)
+        cols = ['dataset', 'F-score', 'AUC-ROC', 'AUC-PR', 'Aff-F1', 'Precision', 'Recall']
+        cols = [c for c in cols if c in summary_df.columns]
 
-        # 保存结果
-        output_cols = [
-            'name', 'Precision', 'Recall', 'F-score',
-            'AUC-ROC', 'AUC-PR', 'ACC',
-            'Aff-Pre', 'Aff-Rec', 'Aff-F1',
-            'R_AUC_ROC', 'R_AUC_PR', 'VUS_ROC', 'VUS_PR', 'F1_AUC'
-        ]
+        print(summary_df[cols].to_string(index=False))
 
-        res_df = pd.DataFrame([result])
+        # 保存汇总
         pa_suffix = '_PA' if use_pa else '_noPA'
-        output_file = os.path.join(path, f'{ds_name}_All_evaluation{pa_suffix}.csv')
-
-        # 确保输出目录存在
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        res_df[output_cols].to_csv(output_file, index=False)
-        print(f"\nResults saved to {output_file}")
-
-        return res_df, result
-
-    # ============================================================
-    # Single 模式：逐个通道评估，计算 Macro 和 Micro
-    # ============================================================
-    else:
-        print("\n[Single Mode] Evaluating each channel separately...")
-
-        columns = [
-            'name',
-            'Precision', 'Recall', 'F-score', 'ACC',
-            'Aff-Pre', 'Aff-Rec', 'Aff-F1',
-            'AUC-ROC', 'AUC-PR',
-            'R_AUC_ROC', 'R_AUC_PR', 'VUS_ROC', 'VUS_PR', 'F1_AUC',
-            'TP', 'TN', 'FP', 'FN', 'threshold'
-        ]
-
-        res_df = pd.DataFrame(columns=columns)
-
-        # 【修改】如果指定了具体的 fname（非 All），只评估该文件
-        if fname != 'All':
-            file_list = [fname]
-        else:
-            file_list = sorted(os.listdir(path))
-
-        for filename in file_list:
-            # 跳过非目录和特殊文件
-            full_path = os.path.join(path, filename)
-            if not os.path.isdir(full_path):
-                continue
-            if filename in ['All', 'GECCO', '.json', 'classification']:
-                continue
-
-            print(f"\nProcessing: {filename}")
-
-            try:
-                df_train = pd.read_csv(f"{full_path}/classification/classification_trainprobs.csv")
-                df_test = pd.read_csv(f"{full_path}/classification/classification_testprobs.csv")
-            except FileNotFoundError:
-                print(f"  Skipping: file not found")
-                continue
-
-            try:
-                result = evaluate_single_channel(df_train, df_test, use_pa, slidingWindow)
-                result['name'] = filename
-
-                print(f"  Threshold: {result['threshold']:.4f}")
-                print(f"  F-score: {result['F-score']:.4f}, AUC-ROC: {result['AUC-ROC']:.4f}")
-
-            except Exception as e:
-                print(f"  ERROR: {e}")
-                import traceback
-                traceback.print_exc()
-                result = {'name': filename}
-                for col in columns[1:]:
-                    result[col] = 0
-
-            res_df = res_df._append(pd.Series(result), ignore_index=True)
-
-        n_channels = len(res_df)
-
-        if n_channels == 0:
-            print("\nNo valid results found!")
-            return None, None
-
-        # 计算 Macro 和 Micro
-        macro = compute_macro_metrics(res_df)
-        micro = compute_micro_metrics(res_df)
-
-        # 打印汇总
-        print_multi_channel_summary(macro, micro, n_channels, use_pa)
-
-        # 保存详细结果
-        output_cols = [
-            'name', 'Precision', 'Recall', 'F-score',
-            'AUC-ROC', 'AUC-PR', 'ACC',
-            'Aff-Pre', 'Aff-Rec', 'Aff-F1',
-            'R_AUC_ROC', 'R_AUC_PR', 'VUS_ROC', 'VUS_PR', 'F1_AUC'
-        ]
-
-        pa_suffix = '_PA' if use_pa else '_noPA'
-
-        # 详细结果（每通道）
-        detail_file = os.path.join(path, f'{ds_name}_channels_evaluation{pa_suffix}.csv')
-        res_df[output_cols].to_csv(detail_file, index=False)
-        print(f"\nChannel details saved to {detail_file}")
-
-        # 汇总结果
-        summary_data = {
-            'Aggregation': ['Macro', 'Micro'],
-            'Precision': [macro['Precision_mean'], micro['Precision']],
-            'Recall': [macro['Recall_mean'], micro['Recall']],
-            'F-score': [macro['F-score_mean'], micro['F-score']],
-            'ACC': [macro['ACC_mean'], micro['ACC']],
-            'Aff-Pre': [macro['Aff-Pre_mean'], '-'],
-            'Aff-Rec': [macro['Aff-Rec_mean'], '-'],
-            'Aff-F1': [macro['Aff-F1_mean'], '-'],
-            'AUC-ROC': [macro['AUC-ROC_mean'], '-'],
-            'AUC-PR': [macro['AUC-PR_mean'], '-'],
-            'R_AUC_ROC': [macro['R_AUC_ROC_mean'], '-'],
-            'R_AUC_PR': [macro['R_AUC_PR_mean'], '-'],
-            'VUS_ROC': [macro['VUS_ROC_mean'], '-'],
-            'VUS_PR': [macro['VUS_PR_mean'], '-'],
-            'F1_AUC': [macro['F1_AUC_mean'], '-'],
-        }
-
-        summary_df = pd.DataFrame(summary_data)
-        summary_file = os.path.join(path, f'{ds_name}_summary{pa_suffix}.csv')
+        summary_file = os.path.join(result_root, f'all_datasets_{eval_level}_summary{pa_suffix}.csv')
         summary_df.to_csv(summary_file, index=False)
-        print(f"Summary saved to {summary_file}")
+        print(f"\nSummary saved to {summary_file}")
 
-        return res_df, {'macro': macro, 'micro': micro}
+    return all_results
 
 
 # ============================================================
-# 对比函数：同时运行 PA 和非 PA 评估
+# 对比不同转换方法
 # ============================================================
-def compare_pa_effect(ds_name, slidingWindow=100, mode='auto', fname='All'):
-    """对比 PA 调整的效果"""
-    print("\n" + "#" * 60)
-    print("# Running evaluation WITHOUT Point Adjustment")
-    print("#" * 60)
-    res_nopa, summary_nopa = evaluate_dataset(ds_name, use_pa=False,
-                                              slidingWindow=slidingWindow, mode=mode, fname=fname)
+def compare_methods(
+        ds_name,
+        fname='All',
+        use_pa=False,
+        data_root='data',
+        result_root='results'
+):
+    """对比不同的窗口到点转换方法"""
 
-    print("\n" + "#" * 60)
-    print("# Running evaluation WITH Point Adjustment")
-    print("#" * 60)
-    res_pa, summary_pa = evaluate_dataset(ds_name, use_pa=True,
-                                          slidingWindow=slidingWindow, mode=mode, fname=fname)
+    methods = ['mean', 'max', 'last', 'center']
+    results = []
 
-    if summary_nopa is None or summary_pa is None:
-        print("Error: Could not complete comparison")
-        return None, None
+    for method in methods:
+        print(f"\n{'#' * 60}")
+        print(f"# Method: {method}")
+        print(f"{'#' * 60}")
 
-    # 打印对比
-    print("\n" + "=" * 60)
-    print("PA Effect Comparison (Label-based metrics only)")
-    print("=" * 60)
+        result = evaluate_dataset(
+            ds_name=ds_name,
+            fname=fname,
+            use_pa=use_pa,
+            eval_level='point',
+            score_method=method,
+            data_root=data_root,
+            result_root=result_root
+        )
 
-    if mode == 'all' or (isinstance(summary_nopa, dict) and 'Precision' in summary_nopa):
-        # All 模式，直接对比
-        print(f"\n{'Metric':<12} {'Without PA':>12} {'With PA':>12} {'Δ':>10}")
-        print("-" * 48)
-        for metric in ['Precision', 'Recall', 'F-score', 'ACC', 'Aff-Pre', 'Aff-Rec', 'Aff-F1']:
-            val_nopa = summary_nopa.get(metric, 0)
-            val_pa = summary_pa.get(metric, 0)
-            delta = val_pa - val_nopa
-            print(f"{metric:<12} {val_nopa:>12.4f} {val_pa:>12.4f} {delta:>+10.4f}")
-    else:
-        # Single 模式，对比 Macro 和 Micro
-        print("\n[Macro-averaged]")
-        print(f"{'Metric':<12} {'Without PA':>12} {'With PA':>12} {'Δ':>10}")
-        print("-" * 48)
-        for metric in ['Precision', 'Recall', 'F-score', 'ACC', 'Aff-Pre', 'Aff-Rec', 'Aff-F1']:
-            val_nopa = summary_nopa['macro'].get(f'{metric}_mean', 0)
-            val_pa = summary_pa['macro'].get(f'{metric}_mean', 0)
-            delta = val_pa - val_nopa
-            print(f"{metric:<12} {val_nopa:>12.4f} {val_pa:>12.4f} {delta:>+10.4f}")
+        if result:
+            result['method'] = method
+            results.append(result)
 
-        print("\n[Micro-averaged]")
-        print(f"{'Metric':<12} {'Without PA':>12} {'With PA':>12} {'Δ':>10}")
-        print("-" * 48)
-        for metric in ['Precision', 'Recall', 'F-score', 'ACC']:
-            val_nopa = summary_nopa['micro'].get(metric, 0)
-            val_pa = summary_pa['micro'].get(metric, 0)
-            delta = val_pa - val_nopa
-            print(f"{metric:<12} {val_nopa:>12.4f} {val_pa:>12.4f} {delta:>+10.4f}")
+    # 打印对比表格
+    if results:
+        print("\n" + "=" * 80)
+        print("Method Comparison")
+        print("=" * 80)
+        print(f"{'Method':<10} {'F-score':>10} {'AUC-ROC':>10} {'AUC-PR':>10} {'Aff-F1':>10}")
+        print("-" * 50)
+        for r in results:
+            print(
+                f"{r['method']:<10} {r['F-score']:>10.4f} {r['AUC-ROC']:>10.4f} {r['AUC-PR']:>10.4f} {r['Aff-F1']:>10.4f}")
 
-    return res_nopa, res_pa
+    return results
 
 
 # ============================================================
 # 入口
 # ============================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Anomaly Detection Evaluation')
+    parser = argparse.ArgumentParser(description='Unified Anomaly Detection Evaluation')
     parser.add_argument('--dataset', type=str, default='MSL',
-                        help='Dataset name')
+                        help='Dataset name (MSL, SMAP, SMD, PSM, SWAT, NIPS_TS_Swan, NIPS_TS_Water)')
     parser.add_argument('--fname', type=str, default='All',
-                        help='File name: "All" for aggregated evaluation, or specific channel name')
+                        help='File name')
     parser.add_argument('--use_pa', action='store_true',
-                        help='Enable Point Adjustment for label-based metrics')
+                        help='Enable Point Adjustment')
     parser.add_argument('--sliding_window', type=int, default=100,
                         help='Sliding window for VUS/R_AUC')
-    parser.add_argument('--mode', type=str, default='auto',
-                        choices=['auto', 'single', 'all'],
-                        help='Evaluation mode: auto, single (per-channel), all (aggregated)')
-    parser.add_argument('--compare_pa', action='store_true',
-                        help='Run both PA and non-PA evaluation and compare')
+    parser.add_argument('--eval_level', type=str, default='point',
+                        choices=['point', 'window'],
+                        help='Evaluation level')
+    parser.add_argument('--score_method', type=str, default='mean',
+                        choices=['mean', 'max', 'last', 'first', 'center'],
+                        help='Method for converting window scores to point scores')
+    parser.add_argument('--data_root', type=str, default='data',
+                        help='Data root directory')
+    parser.add_argument('--result_root', type=str, default='results',
+                        help='Results root directory')
+    parser.add_argument('--compare_methods', action='store_true',
+                        help='Compare different conversion methods')
+    parser.add_argument('--eval_all', action='store_true',
+                        help='Evaluate all datasets')
 
     args = parser.parse_args()
 
-    if args.compare_pa:
-        compare_pa_effect(
+    if args.eval_all:
+        evaluate_all_datasets(
+            eval_level=args.eval_level,
+            score_method=args.score_method,
+            use_pa=args.use_pa,
+            data_root=args.data_root,
+            result_root=args.result_root
+        )
+    elif args.compare_methods:
+        compare_methods(
             ds_name=args.dataset,
-            slidingWindow=args.sliding_window,
-            mode=args.mode,
-            fname=args.fname
+            fname=args.fname,
+            use_pa=args.use_pa,
+            data_root=args.data_root,
+            result_root=args.result_root
         )
     else:
         evaluate_dataset(
             ds_name=args.dataset,
+            fname=args.fname,
             use_pa=args.use_pa,
             slidingWindow=args.sliding_window,
-            mode=args.mode,
-            fname=args.fname
+            eval_level=args.eval_level,
+            score_method=args.score_method,
+            data_root=args.data_root,
+            result_root=args.result_root
         )

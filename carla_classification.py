@@ -62,12 +62,12 @@ def main():
                 p['fname'] = file_name
                 if ii == 0 :
                     base_dataset = get_train_dataset(p, train_transformations, sanomaly,
-                                                     to_neighbors_dataset=False)
+                                                     to_augmented_dataset=True)
                     val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
                                                   base_dataset.std)
                 else:
                     new_base_dataset = get_train_dataset(p, train_transformations, sanomaly,
-                                                     to_neighbors_dataset=False)
+                                                     to_augmented_dataset=True)
                     new_val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, new_base_dataset.mean,
                                                   new_base_dataset.std)
                     val_dataset.concat_ds(new_val_dataset)
@@ -76,8 +76,8 @@ def main():
             p['fname'] = 'All'
         else:
             #base_dataset = get_aug_train_dataset(p, train_transformations, to_neighbors_dataset = True)
-            info_ds = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
-            val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, info_ds.mean, info_ds.std)
+            base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
+            val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean, base_dataset.std)
     elif p['train_db_name'] == 'smd' and p['fname'] != 'All':
         if p['fname'] == 'All':
             # 1. Define path to the train directory based on image structure
@@ -91,23 +91,23 @@ def main():
                 p['fname'] = file_name
 
                 if ii == 0:
-                    train_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
-                    val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, train_dataset.mean,
-                                                  train_dataset.std)
+                    base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
+                    val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
+                                                  base_dataset.std)
                 else:
-                    new_train_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
-                    new_val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, new_train_dataset.mean,
-                                                      new_train_dataset.std)
+                    new_base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
+                    new_val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, new_base_dataset.mean,
+                                                      new_base_dataset.std)
 
-                    train_dataset.concat_ds(new_train_dataset)
+                    base_dataset.concat_ds(new_base_dataset)
                     val_dataset.concat_ds(new_val_dataset)
                 ii += 1
             p['fname'] = 'All'
         else:
             # Standard single file loading
-            train_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=True)
-            val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, train_dataset.mean,
-                                          train_dataset.std)
+            base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
+            val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
+                                          base_dataset.std)
     elif p['train_db_name'] == 'yahoo':
         filename = os.path.join('/home/zahraz/hz18_scratch/zahraz/datasets/', 'Yahoo/', p['fname'])
         dataset = []

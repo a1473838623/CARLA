@@ -62,7 +62,7 @@ def main():
     val_transforms = get_val_transformations1(p)
 
 
-    if p['train_db_name'] == 'MSL' or p['train_db_name'] == 'SMAP' and p['fname'] != 'All':
+    if (p['train_db_name'] == 'MSL' or p['train_db_name'] == 'SMAP') and p['fname'] != 'All':
         if p['fname'] == 'All':
             with open(os.path.join(MyPath.db_root_dir('msl'), 'labeled_anomalies.csv'), 'r') as file:
                 csv_reader = pandas.read_csv(file, delimiter=',')

@@ -41,34 +41,34 @@ class TSRepository(object):
         return class_pred
 
     def mine_nearest_neighbors(self, topk, calculate_accuracy=False):
-        # mine the topk nearest neighbors for every sample
         features = self.features.cpu().numpy()
-        knn_model = NearestNeighbors(n_neighbors=features.shape[0],
-                                 algorithm='brute',
-                                 n_jobs=-1)
+        n_samples = features.shape[0]
+
+        knn_model = NearestNeighbors(n_neighbors=topk + 1,
+                                     algorithm='brute',
+                                     n_jobs=-1)
         knn_model.fit(features)
+        distances, indices = knn_model.kneighbors(features)
 
-        distances, indices = knn_model.kneighbors(features, return_distance=True)
-        k_furthest_neighbours = []
-        k_nearest_neighbours = []
-        for i in range(features.shape[0]):
-            # sort the neighbours based on their distance to the point
-            sorted_indices = np.argsort(distances[i])
-            # get the k furthest neighbours for each point
-            k_furthest_neighbours.append(indices[i][sorted_indices[-topk:]])
-            k_nearest_neighbours.append(indices[i][sorted_indices[1:topk+1]])
+        k_nearest_neighbours = indices[:, 1:topk + 1]  # 排除自身
 
-        # evaluate 
+        knn_full = NearestNeighbors(n_neighbors=n_samples,
+                                    algorithm='brute',
+                                    n_jobs=-1)
+        knn_full.fit(features)
+        _, indices_full = knn_full.kneighbors(features)
+        k_furthest_neighbours = indices_full[:, -topk:]
+
         if calculate_accuracy:
             targets = self.targets.cpu().numpy()
-            neighbor_targets = np.take(targets, indices[:,1:], axis=0) # Exclude sample itself for eval
-            anchor_targets = np.repeat(targets.reshape(-1,1), topk, axis=1)
+            neighbor_targets = targets[k_nearest_neighbours]  # (n, topk)
+            anchor_targets = targets[:, np.newaxis]  # (n, 1) 广播
             accuracy = np.mean(neighbor_targets == anchor_targets)
 
             return k_furthest_neighbours, k_nearest_neighbours, accuracy
-        
-        else:
-            return k_furthest_neighbours, k_nearest_neighbours
+
+        return k_furthest_neighbours, k_nearest_neighbours
+
 
     def furthest_nearest_neighbors(self, topk):
         features = self.features

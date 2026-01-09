@@ -3,6 +3,8 @@ import os
 import torch
 import numpy as np
 import pandas
+from torch.utils.data import Subset
+
 from utils.mypath import MyPath
 
 from utils.config import create_config
@@ -172,8 +174,25 @@ def main():
         val_dataset = get_val_dataset(p, val_transforms, sanomaly, False, train_dataset.mean,
                                       train_dataset.std)
 
+
+    total_len = len(train_dataset)
+    val_len = int(total_len * 0.2)
+
+    max_start = total_len - val_len
+    val_start = random.randint(0, max_start)
+    val_end = val_start + val_len
+
+    val_indices = list(range(val_start, val_end))
+    train_indices = list(range(0, val_start)) + list(range(val_end, total_len))
+
+    full_train_dataset = train_dataset
+    train_dataset = Subset(full_train_dataset, train_indices)
+    val_dataset = Subset(full_train_dataset, val_indices)
+
+
     train_dataloader = get_train_dataloader(p, train_dataset)
     val_dataloader = get_val_dataloader(p, val_dataset)
+    np.save(p['val_indices_path'], np.array(val_indices))
     base_dataloader = get_val_dataloader(p, train_dataset)
 
     print('Dataset contains {}/{} train/val samples'.format(len(train_dataset), len(val_dataset)))

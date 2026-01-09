@@ -4,6 +4,8 @@ import os
 import torch
 import pandas
 import numpy as np
+from torch.utils.data import Subset
+
 from utils.mypath import MyPath
 from termcolor import colored
 from utils.config import create_config
@@ -63,21 +65,21 @@ def main():
                 if ii == 0 :
                     base_dataset = get_train_dataset(p, train_transformations, sanomaly,
                                                      to_augmented_dataset=True)
-                    val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
+                    test_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
                                                   base_dataset.std)
                 else:
                     new_base_dataset = get_train_dataset(p, train_transformations, sanomaly,
                                                      to_augmented_dataset=True)
                     new_val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, new_base_dataset.mean,
                                                   new_base_dataset.std)
-                    val_dataset.concat_ds(new_val_dataset)
+                    test_dataset.concat_ds(new_val_dataset)
                     base_dataset.concat_ds(new_base_dataset)
                 ii+=1
             p['fname'] = 'All'
         else:
             #base_dataset = get_aug_train_dataset(p, train_transformations, to_neighbors_dataset = True)
             base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
-            val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean, base_dataset.std)
+            test_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean, base_dataset.std)
     elif p['train_db_name'] == 'smd' and p['fname'] != 'All':
         if p['fname'] == 'All':
             # 1. Define path to the train directory based on image structure
@@ -92,7 +94,7 @@ def main():
 
                 if ii == 0:
                     base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
-                    val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
+                    test_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
                                                   base_dataset.std)
                 else:
                     new_base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
@@ -100,13 +102,13 @@ def main():
                                                       new_base_dataset.std)
 
                     base_dataset.concat_ds(new_base_dataset)
-                    val_dataset.concat_ds(new_val_dataset)
+                    test_dataset.concat_ds(new_val_dataset)
                 ii += 1
             p['fname'] = 'All'
         else:
             # Standard single file loading
             base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
-            val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
+            test_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
                                           base_dataset.std)
     elif p['train_db_name'] == 'yahoo':
         filename = os.path.join('/home/zahraz/hz18_scratch/zahraz/datasets/', 'Yahoo/', p['fname'])
@@ -145,14 +147,15 @@ def main():
 
         base_dataset = get_train_dataset(p, train_transformations, sanomaly,
                                           to_augmented_dataset=True, data=TRAIN_TS, label=train_label)
-        val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean, base_dataset.std,
+        test_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean, base_dataset.std,
                                         TEST_TS, test_label)
 
     else:
         base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
-        val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
+        test_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
                                       base_dataset.std)
-
+    val_indices = np.load(p['val_indices_path'])
+    val_dataset = Subset(base_dataset, val_indices.tolist())
     val_dataloader = get_val_dataloader(p, val_dataset)
 
     print(colored('-- Train samples size: %d - Test samples size: %d' %(len(train_dataset), len(val_dataset)), 'green'))
@@ -236,7 +239,7 @@ def main():
                 'epoch': p['epochs'], 'best_loss': best_loss, 'best_loss_head': best_loss_head, 'normal_label': normal_label},
                p['classification_checkpoint'])
     normal_label = model_checkpoint['normal_label']
-    tst_dl = get_val_dataloader(p, val_dataset)
+    tst_dl = get_val_dataloader(p, test_dataset)
     predictions, _ = get_predictions(p, tst_dl, model, True)
 
 if __name__ == "__main__":

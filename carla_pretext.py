@@ -244,7 +244,7 @@ def main():
     np.save(p['pretext_features_train_path'], out_pre)
     topk = 10
     print('Mine the nearest neighbors (Top-%d)' %(topk))
-    kfurtherst, knearest = ts_repository_aug.mine_nearest_neighbors(topk)
+    kfurtherst, knearest = ts_repository_aug.furthest_nearest_neighbors(topk)
     np.save(p['topk_neighbors_train_path'], knearest)
     np.save(p['bottomk_neighbors_train_path'], kfurtherst)
 
@@ -259,7 +259,7 @@ def main():
     np.save(p['pretext_features_test_path'], out_pre)
     topk = 10
     print('Mine the nearest and furthest neighbors (Top-%d)' %(topk))
-    kfurtherst, knearest = ts_repository_val.mine_nearest_neighbors(topk)
+    kfurtherst, knearest = ts_repository_val.furthest_nearest_neighbors(topk)
     np.save(p['topk_neighbors_val_path'], knearest)
     np.save(p['bottomk_neighbors_val_path'], kfurtherst)
 

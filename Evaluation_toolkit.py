@@ -871,7 +871,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_pa', type=str, default='both',
                         choices=['true', 'false', 'both', None],
                         help='Use Point Adjustment: true, false, or both (default)')
-    parser.add_argument('--sliding_window', type=int, default=None,
+    parser.add_argument('--sliding_window', type=int, default=100,
                         help='Sliding window for VUS/R_AUC (None for auto)')
     parser.add_argument('--eval_level', type=str, default='window',
                         choices=['point', 'window'],

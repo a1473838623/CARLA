@@ -150,19 +150,30 @@ def evaluate_single_channel(df_train, df_test, slidingWindow):
     y_true = np.where(df_test['Class'] == 0, 0, 1)
     scores = (1 - df_test[score_col]).values
 
-    # 找最佳阈值
-    best_threshold = find_best_threshold(y_true, scores)
-    y_pred_raw = (scores >= best_threshold).astype(int)
-
-    result['threshold'] = best_threshold
-
     # 基于分数的指标（不受 PA 影响）
     score_metrics = compute_score_based_metrics(y_true, scores, slidingWindow)
     result.update(score_metrics)
 
-    # Without PA
-    label_nopa = compute_label_based_metrics(y_true, y_pred_raw)
-    aff_pre_nopa, aff_rec_nopa, aff_f1_nopa = compute_affiliation_metrics(y_true, y_pred_raw)
+    # 获取所有阈值
+    precision, recall, thresholds = precision_recall_curve(y_true, scores)
+
+    # ============================================================
+    # Without PA: 直接用 precision_recall_curve 找最佳阈值
+    # ============================================================
+    f1_scores_nopa = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(precision),
+        where=(precision + recall) != 0
+    )
+    best_idx_nopa = np.argmax(f1_scores_nopa)
+    best_thr_nopa = thresholds[best_idx_nopa] if best_idx_nopa < len(thresholds) else thresholds[-1]
+
+    y_pred_nopa = (scores >= best_thr_nopa).astype(int)
+    label_nopa = compute_label_based_metrics(y_true, y_pred_nopa)
+    aff_pre_nopa, aff_rec_nopa, aff_f1_nopa = compute_affiliation_metrics(y_true, y_pred_nopa)
+
+    result['threshold_noPA'] = best_thr_nopa
     result['Precision_noPA'] = label_nopa['Precision']
     result['Recall_noPA'] = label_nopa['Recall']
     result['F-score_noPA'] = label_nopa['F-score']
@@ -175,10 +186,34 @@ def evaluate_single_channel(df_train, df_test, slidingWindow):
     result['Aff-Rec_noPA'] = aff_rec_nopa
     result['Aff-F1_noPA'] = aff_f1_nopa
 
-    # With PA
-    y_pred_pa = point_adjustment(y_true, y_pred_raw)
-    label_pa = compute_label_based_metrics(y_true, y_pred_pa)
-    aff_pre_pa, aff_rec_pa, aff_f1_pa = compute_affiliation_metrics(y_true, y_pred_pa)
+    # ============================================================
+    # With PA: 遍历阈值，每个都 apply PA 后再算 F1
+    # ============================================================
+    best_f1_pa = -1
+    best_thr_pa = thresholds[0] if len(thresholds) > 0 else 0
+    best_pred_pa = None
+
+    for thr in thresholds:
+        y_pred_raw = (scores >= thr).astype(int)
+        y_pred_pa = point_adjustment(y_true, y_pred_raw)
+
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred_pa).ravel()
+        pre_pa = tp / (tp + fp) if (tp + fp) > 0 else 0
+        rec_pa = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1_pa = 2 * pre_pa * rec_pa / (pre_pa + rec_pa) if (pre_pa + rec_pa) > 0 else 0
+
+        if f1_pa > best_f1_pa:
+            best_f1_pa = f1_pa
+            best_thr_pa = thr
+            best_pred_pa = y_pred_pa
+
+    if best_pred_pa is None:
+        best_pred_pa = point_adjustment(y_true, (scores >= best_thr_pa).astype(int))
+
+    label_pa = compute_label_based_metrics(y_true, best_pred_pa)
+    aff_pre_pa, aff_rec_pa, aff_f1_pa = compute_affiliation_metrics(y_true, best_pred_pa)
+
+    result['threshold_PA'] = best_thr_pa
     result['Precision_PA'] = label_pa['Precision']
     result['Recall_PA'] = label_pa['Recall']
     result['F-score_PA'] = label_pa['F-score']

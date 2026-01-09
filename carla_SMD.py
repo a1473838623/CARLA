@@ -3,8 +3,9 @@ import subprocess
 from pathlib import Path
 folder_path = Path('./datasets/SMD/train')
 
-for file_name in folder_path.iterdir():
-    if file_name.is_file():
+for file in folder_path.iterdir():
+    if file.is_file():
+        file_name = file.name
         print(file_name)
         subprocess.run([
             'python', 'carla_pretext.py',

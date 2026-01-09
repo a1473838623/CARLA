@@ -33,3 +33,10 @@ subprocess.run([
     '--config_exp', 'configs/classification/carla_classification_msl.yml',
     '--fname', 'All'
 ])
+
+
+subprocess.run([
+    'python', 'Evaluation_toolkit.py',
+    '--dataset', 'MSL',
+    '--fname', 'All'
+])

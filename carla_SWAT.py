@@ -14,3 +14,9 @@ subprocess.run([
     '--config_exp', 'configs/classification/carla_classification_swat.yml',
     '--fname', 'All'
 ])
+
+subprocess.run([
+    'python', 'Evaluation_toolkit.py',
+    '--dataset', 'swat',
+    '--fname', 'All'
+])

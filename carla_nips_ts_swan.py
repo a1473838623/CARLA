@@ -12,3 +12,9 @@ subprocess.run([
     '--config_exp', 'configs/classification/carla_classification_nips_ts_swan.yml',
     '--fname', 'All'
 ])
+
+subprocess.run([
+    'python', 'Evaluation_toolkit.py',
+    '--dataset', 'nips_ts_swan',
+    '--fname', 'All'
+])

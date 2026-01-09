@@ -1,23 +1,30 @@
 import numpy as np
 import pandas as pd
 import os
-
 os.environ['NUMBA_DISABLE_CUDA'] = '1'
 import argparse
 
-from sklearn.metrics import (
-    precision_recall_fscore_support, confusion_matrix,
-    roc_auc_score, average_precision_score,
-    precision_recall_curve, auc
-)
 from metrics.affiliation.generics import convert_vector_to_events
 from metrics.affiliation.metrics import pr_from_events
 from metrics.vus.metrics import get_range_vus_roc
 
+from sklearn.metrics import (
+    roc_auc_score, average_precision_score, confusion_matrix,
+    precision_recall_curve, auc
+)
 
+
+# ============================================================
+# PA (Point Adjustment) 函数
+# ============================================================
 def point_adjustment(y_true, y_pred):
+    """
+    Point Adjustment: 如果一个异常段内有任意一个点被检测到，
+    则将该异常段内的所有点都标记为检测到。
+    """
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred).copy()
+
     anomaly_state = False
 
     for i in range(len(y_true)):
@@ -36,355 +43,566 @@ def point_adjustment(y_true, y_pred):
     return y_pred
 
 
-def find_best_threshold(scores, labels, apply_pa=False):
-    gt = labels.astype(int)
-    percentiles = [(90 + (i / 10)) for i in range(100)]
-    thresholds = np.percentile(scores, percentiles)
+# ============================================================
+# 指标计算函数
+# ============================================================
+def compute_affiliation_metrics(y_true, y_pred):
+    """计算 Affiliation 指标"""
+    events_pred = convert_vector_to_events(y_pred)
+    events_gt = convert_vector_to_events(y_true)
+    Trange = (0, len(y_true))
+    affiliation = pr_from_events(events_pred, events_gt, Trange)
 
-    best_f1, best_threshold = -1, thresholds[0]
+    aff_pre = affiliation['precision']
+    aff_rec = affiliation['recall']
+    aff_f1 = 2 * aff_pre * aff_rec / (aff_pre + aff_rec) if (aff_pre + aff_rec) > 0 else 0
 
-    for thresh in thresholds:
-        pred = (scores >= thresh).astype(int)
-        if apply_pa:
-            pred = point_adjustment(gt, pred)
-        _, _, f1, _ = precision_recall_fscore_support(gt, pred, average='binary', zero_division=0)
-        if f1 > best_f1:
-            best_f1, best_threshold = f1, thresh
+    return aff_pre, aff_rec, aff_f1
 
-    return best_threshold
+
+def compute_f1_auc(y_true, scores):
+    """计算 F1-AUC"""
+    precision, recall, _ = precision_recall_curve(y_true, scores)
+    f1_scores = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(precision),
+        where=(precision + recall) != 0
+    )
+    sorted_indices = np.argsort(recall)
+    return auc(recall[sorted_indices], f1_scores[sorted_indices])
 
 
 def compute_label_based_metrics(y_true, y_pred):
+    """计算基于标签的指标：Precision, Recall, F-score, ACC"""
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0
     f_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
     acc = (tp + tn) / (tp + tn + fp + fn)
+
     return {
-        'Precision': precision, 'Recall': recall, 'F-score': f_score, 'ACC': acc,
+        'Precision': precision,
+        'Recall': recall,
+        'F-score': f_score,
+        'ACC': acc,
         'TP': int(tp), 'TN': int(tn), 'FP': int(fp), 'FN': int(fn)
     }
 
 
-def compute_affiliation_metrics(y_true, y_pred):
-    events_pred = convert_vector_to_events(y_pred)
-    events_gt = convert_vector_to_events(y_true)
-
-    if len(events_pred) == 0 or len(events_gt) == 0:
-        return {'Aff-Pre': 0.0, 'Aff-Rec': 0.0, 'Aff-F1': 0.0}
-
-    affiliation = pr_from_events(events_pred, events_gt, (0, len(y_true)))
-    aff_pre, aff_rec = affiliation['precision'], affiliation['recall']
-    aff_f1 = 2 * aff_pre * aff_rec / (aff_pre + aff_rec) if (aff_pre + aff_rec) > 0 else 0
-    return {'Aff-Pre': aff_pre, 'Aff-Rec': aff_rec, 'Aff-F1': aff_f1}
-
-
 def compute_score_based_metrics(y_true, scores, slidingWindow=100):
+    """计算基于分数的指标（不受 PA 影响）"""
     result = {}
-    try:
-        result['AUC-ROC'] = roc_auc_score(y_true, scores)
-        result['AUC-PR'] = average_precision_score(y_true, scores)
-    except:
-        result['AUC-ROC'] = result['AUC-PR'] = 0
+
+    result['AUC-ROC'] = roc_auc_score(y_true, scores)
+    result['AUC-PR'] = average_precision_score(y_true, scores)
+    result['F1_AUC'] = compute_f1_auc(y_true, scores)
 
     try:
-        precision, recall, _ = precision_recall_curve(y_true, scores)
-        f1_scores = np.divide(2 * precision * recall, precision + recall,
-                              out=np.zeros_like(precision), where=(precision + recall) != 0)
-        result['F1_AUC'] = auc(recall[np.argsort(recall)], f1_scores[np.argsort(recall)])
-    except:
-        result['F1_AUC'] = 0
+        vus_metrics = get_range_vus_roc(
+            score=scores,
+            labels=y_true,
+            slidingWindow=slidingWindow
+        )
+        result['R_AUC_ROC'] = vus_metrics['R_AUC_ROC']
+        result['R_AUC_PR'] = vus_metrics['R_AUC_PR']
+        result['VUS_ROC'] = vus_metrics['VUS_ROC']
+        result['VUS_PR'] = vus_metrics['VUS_PR']
+    except Exception as e:
+        print(f"  Warning: VUS/R_AUC calculation failed: {e}")
+        result['R_AUC_ROC'] = 0
+        result['R_AUC_PR'] = 0
+        result['VUS_ROC'] = 0
+        result['VUS_PR'] = 0
 
-    try:
-        vus = get_range_vus_roc(score=scores, labels=y_true, slidingWindow=slidingWindow)
-        result['R_AUC_ROC'], result['R_AUC_PR'] = vus['R_AUC_ROC'], vus['R_AUC_PR']
-        result['VUS_ROC'], result['VUS_PR'] = vus['VUS_ROC'], vus['VUS_PR']
-    except:
-        result['R_AUC_ROC'] = result['R_AUC_PR'] = result['VUS_ROC'] = result['VUS_PR'] = 0
-
-    result['slidingWindow'] = slidingWindow
     return result
 
 
-def compute_micro_label_metrics(res_df):
-    """Micro 平均：汇总所有文件的 TP/FP/FN/TN 后再计算指标"""
-    sum_tp, sum_tn = res_df['TP'].sum(), res_df['TN'].sum()
-    sum_fp, sum_fn = res_df['FP'].sum(), res_df['FN'].sum()
-
-    pre = sum_tp / (sum_tp + sum_fp) if (sum_tp + sum_fp) > 0 else 0
-    rec = sum_tp / (sum_tp + sum_fn) if (sum_tp + sum_fn) > 0 else 0
-    f1 = 2 * pre * rec / (pre + rec) if (pre + rec) > 0 else 0
-    acc = (sum_tp + sum_tn) / (sum_tp + sum_tn + sum_fp + sum_fn)
-
-    return {
-        'Precision': pre, 'Recall': rec, 'F-score': f1, 'ACC': acc,
-        'TP': int(sum_tp), 'TN': int(sum_tn), 'FP': int(sum_fp), 'FN': int(sum_fn)
-    }
+def find_best_threshold(y_true, scores):
+    """找到最佳 F1 阈值"""
+    precision, recall, thresholds = precision_recall_curve(y_true, scores)
+    f1_scores = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(precision),
+        where=(precision + recall) != 0
+    )
+    best_idx = np.argmax(f1_scores)
+    best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else thresholds[-1]
+    return best_threshold
 
 
-def extract_scores_and_labels(df_train, df_test):
-    """从 DataFrame 提取 scores 和 labels"""
+# ============================================================
+# 单通道评估函数（同时返回 PA 和 noPA）
+# ============================================================
+def evaluate_single_channel(df_train, df_test, slidingWindow):
+    """评估单个通道，同时返回 PA 和 noPA 结果"""
+    result = {}
+
     cl_num = df_train.shape[1] - 1
+
+    # 确定正常类别（原始逻辑）
     df_train['pred'] = df_train[df_train.columns[0:cl_num]].idxmax(axis=1)
     score_col = df_train['pred'].value_counts().idxmax()
 
+    # 准备数据
+    y_true = np.where(df_test['Class'] == 0, 0, 1)
     scores = (1 - df_test[score_col]).values
-    labels = np.where(df_test['Class'] == 0, 0, 1).astype(int)
-    return scores, labels
+
+    # 基于分数的指标（不受 PA 影响）
+    score_metrics = compute_score_based_metrics(y_true, scores, slidingWindow)
+    result.update(score_metrics)
+
+    # 获取所有阈值
+    precision, recall, thresholds = precision_recall_curve(y_true, scores)
+
+    # ============================================================
+    # Without PA: 直接用 precision_recall_curve 找最佳阈值
+    # ============================================================
+    f1_scores_nopa = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(precision),
+        where=(precision + recall) != 0
+    )
+    best_idx_nopa = np.argmax(f1_scores_nopa)
+    best_thr_nopa = thresholds[best_idx_nopa] if best_idx_nopa < len(thresholds) else thresholds[-1]
+
+    y_pred_nopa = (scores >= best_thr_nopa).astype(int)
+    label_nopa = compute_label_based_metrics(y_true, y_pred_nopa)
+    aff_pre_nopa, aff_rec_nopa, aff_f1_nopa = compute_affiliation_metrics(y_true, y_pred_nopa)
+
+    result['threshold_noPA'] = best_thr_nopa
+    result['Precision_noPA'] = label_nopa['Precision']
+    result['Recall_noPA'] = label_nopa['Recall']
+    result['F-score_noPA'] = label_nopa['F-score']
+    result['ACC_noPA'] = label_nopa['ACC']
+    result['TP_noPA'] = label_nopa['TP']
+    result['TN_noPA'] = label_nopa['TN']
+    result['FP_noPA'] = label_nopa['FP']
+    result['FN_noPA'] = label_nopa['FN']
+    result['Aff-Pre_noPA'] = aff_pre_nopa
+    result['Aff-Rec_noPA'] = aff_rec_nopa
+    result['Aff-F1_noPA'] = aff_f1_nopa
+
+    # ============================================================
+    # With PA: 遍历阈值，每个都 apply PA 后再算 F1
+    # ============================================================
+    best_f1_pa = -1
+    best_thr_pa = thresholds[0] if len(thresholds) > 0 else 0
+    best_pred_pa = None
+
+    for thr in thresholds:
+        y_pred_raw = (scores >= thr).astype(int)
+        y_pred_pa = point_adjustment(y_true, y_pred_raw)
+
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred_pa).ravel()
+        pre_pa = tp / (tp + fp) if (tp + fp) > 0 else 0
+        rec_pa = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1_pa = 2 * pre_pa * rec_pa / (pre_pa + rec_pa) if (pre_pa + rec_pa) > 0 else 0
+
+        if f1_pa > best_f1_pa:
+            best_f1_pa = f1_pa
+            best_thr_pa = thr
+            best_pred_pa = y_pred_pa
+
+    if best_pred_pa is None:
+        best_pred_pa = point_adjustment(y_true, (scores >= best_thr_pa).astype(int))
+
+    label_pa = compute_label_based_metrics(y_true, best_pred_pa)
+    aff_pre_pa, aff_rec_pa, aff_f1_pa = compute_affiliation_metrics(y_true, best_pred_pa)
+
+    result['threshold_PA'] = best_thr_pa
+    result['Precision_PA'] = label_pa['Precision']
+    result['Recall_PA'] = label_pa['Recall']
+    result['F-score_PA'] = label_pa['F-score']
+    result['ACC_PA'] = label_pa['ACC']
+    result['TP_PA'] = label_pa['TP']
+    result['TN_PA'] = label_pa['TN']
+    result['FP_PA'] = label_pa['FP']
+    result['FN_PA'] = label_pa['FN']
+    result['Aff-Pre_PA'] = aff_pre_pa
+    result['Aff-Rec_PA'] = aff_rec_pa
+    result['Aff-F1_PA'] = aff_f1_pa
+
+    return result
 
 
-def evaluate_single_file(df_train, df_test, use_pa=None, slidingWindow=100):
-    results = {}
-    scores, gt = extract_scores_and_labels(df_train, df_test)
+# ============================================================
+# 统计汇总函数
+# ============================================================
+def compute_macro_metrics(res_df):
+    """计算 Macro 平均"""
+    metric_cols = [
+        'Precision_noPA', 'Recall_noPA', 'F-score_noPA', 'ACC_noPA',
+        'Aff-Pre_noPA', 'Aff-Rec_noPA', 'Aff-F1_noPA',
+        'Precision_PA', 'Recall_PA', 'F-score_PA', 'ACC_PA',
+        'Aff-Pre_PA', 'Aff-Rec_PA', 'Aff-F1_PA',
+        'AUC-ROC', 'AUC-PR', 'R_AUC_ROC', 'R_AUC_PR',
+        'VUS_ROC', 'VUS_PR', 'F1_AUC'
+    ]
 
-    if use_pa is None or use_pa is True:
-        thresh = find_best_threshold(scores, gt, apply_pa=True)
-        pred = point_adjustment(gt, (scores >= thresh).astype(int))
-        results['with_pa'] = {
-            'threshold': thresh,
-            'label_based': compute_label_based_metrics(gt, pred),
-            'affiliation': compute_affiliation_metrics(gt, pred)
-        }
+    macro = {}
+    n_samples = len(res_df)
 
-    if use_pa is None or use_pa is False:
-        thresh = find_best_threshold(scores, gt, apply_pa=False)
-        pred = (scores >= thresh).astype(int)
-        results['without_pa'] = {
-            'threshold': thresh,
-            'label_based': compute_label_based_metrics(gt, pred),
-            'affiliation': compute_affiliation_metrics(gt, pred)
-        }
+    for col in metric_cols:
+        if col in res_df.columns:
+            macro[f'{col}_mean'] = res_df[col].mean()
+            macro[f'{col}_std'] = res_df[col].std() if n_samples > 1 else 0.0
 
-    results['score_based'] = compute_score_based_metrics(gt, scores, slidingWindow)
-    return results
-
-
-def find_result_files(ds_name, fname, result_root='results'):
-    for p in [
-        os.path.join(result_root, ds_name, fname, 'classification'),
-        os.path.join(result_root, ds_name, 'classification'),
-    ]:
-        train_file = os.path.join(p, 'classification_trainprobs.csv')
-        test_file = os.path.join(p, 'classification_testprobs.csv')
-        if os.path.exists(train_file) and os.path.exists(test_file):
-            return train_file, test_file
-    return None, None
+    return macro
 
 
-def get_file_list(ds_name, result_root='results'):
-    path = os.path.join(result_root, ds_name)
-    if not os.path.exists(path):
-        return []
-    return [item for item in sorted(os.listdir(path))
-            if os.path.isdir(os.path.join(path, item))
-            and item not in ['All', 'classification']
-            and os.path.exists(os.path.join(path, item, 'classification'))]
+def compute_micro_metrics(res_df):
+    """计算 Micro 平均"""
+    result = {}
+
+    for suffix in ['_noPA', '_PA']:
+        tp_col, tn_col = f'TP{suffix}', f'TN{suffix}'
+        fp_col, fn_col = f'FP{suffix}', f'FN{suffix}'
+
+        if not all(col in res_df.columns for col in [tp_col, tn_col, fp_col, fn_col]):
+            continue
+
+        sum_tp = res_df[tp_col].sum()
+        sum_tn = res_df[tn_col].sum()
+        sum_fp = res_df[fp_col].sum()
+        sum_fn = res_df[fn_col].sum()
+
+        micro_pre = sum_tp / (sum_tp + sum_fp) if (sum_tp + sum_fp) > 0 else 0
+        micro_rec = sum_tp / (sum_tp + sum_fn) if (sum_tp + sum_fn) > 0 else 0
+        micro_f1 = 2 * micro_pre * micro_rec / (micro_pre + micro_rec) if (micro_pre + micro_rec) > 0 else 0
+        micro_acc = (sum_tp + sum_tn) / (sum_tp + sum_tn + sum_fp + sum_fn)
+
+        result[f'Precision{suffix}'] = micro_pre
+        result[f'Recall{suffix}'] = micro_rec
+        result[f'F-score{suffix}'] = micro_f1
+        result[f'ACC{suffix}'] = micro_acc
+        result[f'TP{suffix}'] = int(sum_tp)
+        result[f'TN{suffix}'] = int(sum_tn)
+        result[f'FP{suffix}'] = int(sum_fp)
+        result[f'FN{suffix}'] = int(sum_fn)
+
+    return result
 
 
-def print_results(results, name):
+# ============================================================
+# 打印函数
+# ============================================================
+def print_single_result(result, name):
+    """打印单个结果"""
     print(f"\n{'=' * 70}")
     print(f"  Result: {name}")
     print(f"{'=' * 70}")
 
-    for key, label in [('with_pa', 'WITH PA'), ('without_pa', 'WITHOUT PA')]:
-        if key not in results:
-            continue
-        print(f"\n{'─' * 70}")
-        print(f"  {label}")
-        print(f"{'─' * 70}")
-        print(f"  Threshold: {results[key]['threshold']:.6f}")
-
-        lm = results[key]['label_based']
-        print(f"\n  [Label-based metrics]")
-        print(f"    Precision : {lm['Precision']:.4f}")
-        print(f"    Recall    : {lm['Recall']:.4f}")
-        print(f"    F-score   : {lm['F-score']:.4f}")
-        print(f"    ACC       : {lm['ACC']:.4f}")
-        print(f"    (TP={lm['TP']}, TN={lm['TN']}, FP={lm['FP']}, FN={lm['FN']})")
-
-        am = results[key]['affiliation']
-        print(f"\n  [Affiliation metrics]")
-        print(f"    Aff-Pre   : {am['Aff-Pre']:.4f}")
-        print(f"    Aff-Rec   : {am['Aff-Rec']:.4f}")
-        print(f"    Aff-F1    : {am['Aff-F1']:.4f}")
-
-    sm = results['score_based']
     print(f"\n{'─' * 70}")
-    print(f"  SCORE-BASED METRICS (PA not applicable)")
+    print(f"  WITHOUT Point Adjustment")
     print(f"{'─' * 70}")
-    print(f"    slidingWindow : {sm.get('slidingWindow', 'N/A')}")
-    print(f"    AUC-ROC       : {sm['AUC-ROC']:.4f}")
-    print(f"    AUC-PR        : {sm['AUC-PR']:.4f}")
-    print(f"    R_AUC_ROC     : {sm['R_AUC_ROC']:.4f}")
-    print(f"    R_AUC_PR      : {sm['R_AUC_PR']:.4f}")
-    print(f"    VUS_ROC       : {sm['VUS_ROC']:.4f}")
-    print(f"    VUS_PR        : {sm['VUS_PR']:.4f}")
-    print(f"    F1_AUC        : {sm['F1_AUC']:.4f}")
+    print(f"  [Label-based]")
+    print(f"    Precision : {result['Precision_noPA']:.4f}")
+    print(f"    Recall    : {result['Recall_noPA']:.4f}")
+    print(f"    F-score   : {result['F-score_noPA']:.4f}")
+    print(f"    ACC       : {result['ACC_noPA']:.4f}")
+    print(f"    (TP={result['TP_noPA']}, TN={result['TN_noPA']}, FP={result['FP_noPA']}, FN={result['FN_noPA']})")
+    print(f"  [Affiliation]")
+    print(f"    Aff-Pre   : {result['Aff-Pre_noPA']:.4f}")
+    print(f"    Aff-Rec   : {result['Aff-Rec_noPA']:.4f}")
+    print(f"    Aff-F1    : {result['Aff-F1_noPA']:.4f}")
+
+    print(f"\n{'─' * 70}")
+    print(f"  WITH Point Adjustment")
+    print(f"{'─' * 70}")
+    print(f"  [Label-based]")
+    print(f"    Precision : {result['Precision_PA']:.4f}")
+    print(f"    Recall    : {result['Recall_PA']:.4f}")
+    print(f"    F-score   : {result['F-score_PA']:.4f}")
+    print(f"    ACC       : {result['ACC_PA']:.4f}")
+    print(f"    (TP={result['TP_PA']}, TN={result['TN_PA']}, FP={result['FP_PA']}, FN={result['FN_PA']})")
+    print(f"  [Affiliation]")
+    print(f"    Aff-Pre   : {result['Aff-Pre_PA']:.4f}")
+    print(f"    Aff-Rec   : {result['Aff-Rec_PA']:.4f}")
+    print(f"    Aff-F1    : {result['Aff-F1_PA']:.4f}")
+
+    print(f"\n{'─' * 70}")
+    print(f"  SCORE-BASED (PA not applicable)")
+    print(f"{'─' * 70}")
+    print(f"    AUC-ROC   : {result['AUC-ROC']:.4f}")
+    print(f"    AUC-PR    : {result['AUC-PR']:.4f}")
+    print(f"    R_AUC_ROC : {result['R_AUC_ROC']:.4f}")
+    print(f"    R_AUC_PR  : {result['R_AUC_PR']:.4f}")
+    print(f"    VUS_ROC   : {result['VUS_ROC']:.4f}")
+    print(f"    VUS_PR    : {result['VUS_PR']:.4f}")
+    print(f"    F1_AUC    : {result['F1_AUC']:.4f}")
     print(f"{'=' * 70}\n")
 
 
-def evaluate_dataset(ds_name, fname='All', use_pa=None, slidingWindow=100, mode='auto', result_root='results'):
-    print(f"{'=' * 70}")
-    print(f"Dataset: {ds_name}, Fname: {fname}, Mode: {mode}")
+def print_multi_channel_summary(macro, micro, n_channels):
+    """打印多通道汇总结果"""
+    print(f"\n{'=' * 70}")
+    print(f"  AGGREGATED RESULTS ({n_channels} channels)")
     print(f"{'=' * 70}")
 
-    # 自动检测模式
+    print(f"\n{'─' * 70}")
+    print(f"  WITHOUT Point Adjustment")
+    print(f"{'─' * 70}")
+
+    print(f"\n  [MACRO] (mean ± std)")
+    for metric in ['Precision', 'Recall', 'F-score', 'ACC']:
+        mean_val = macro.get(f'{metric}_noPA_mean', 0)
+        std_val = macro.get(f'{metric}_noPA_std', 0)
+        print(f"    {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
+    for metric in ['Aff-Pre', 'Aff-Rec', 'Aff-F1']:
+        mean_val = macro.get(f'{metric}_noPA_mean', 0)
+        std_val = macro.get(f'{metric}_noPA_std', 0)
+        print(f"    {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
+
+    print(f"\n  [MICRO] (aggregate TP/FP/FN/TN)")
+    print(f"    Precision   : {micro['Precision_noPA']:.4f}")
+    print(f"    Recall      : {micro['Recall_noPA']:.4f}")
+    print(f"    F-score     : {micro['F-score_noPA']:.4f}")
+    print(f"    ACC         : {micro['ACC_noPA']:.4f}")
+    print(f"    (TP={micro['TP_noPA']}, TN={micro['TN_noPA']}, FP={micro['FP_noPA']}, FN={micro['FN_noPA']})")
+
+    print(f"\n{'─' * 70}")
+    print(f"  WITH Point Adjustment")
+    print(f"{'─' * 70}")
+
+    print(f"\n  [MACRO] (mean ± std)")
+    for metric in ['Precision', 'Recall', 'F-score', 'ACC']:
+        mean_val = macro.get(f'{metric}_PA_mean', 0)
+        std_val = macro.get(f'{metric}_PA_std', 0)
+        print(f"    {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
+    for metric in ['Aff-Pre', 'Aff-Rec', 'Aff-F1']:
+        mean_val = macro.get(f'{metric}_PA_mean', 0)
+        std_val = macro.get(f'{metric}_PA_std', 0)
+        print(f"    {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
+
+    print(f"\n  [MICRO] (aggregate TP/FP/FN/TN)")
+    print(f"    Precision   : {micro['Precision_PA']:.4f}")
+    print(f"    Recall      : {micro['Recall_PA']:.4f}")
+    print(f"    F-score     : {micro['F-score_PA']:.4f}")
+    print(f"    ACC         : {micro['ACC_PA']:.4f}")
+    print(f"    (TP={micro['TP_PA']}, TN={micro['TN_PA']}, FP={micro['FP_PA']}, FN={micro['FN_PA']})")
+
+    print(f"\n{'─' * 70}")
+    print(f"  SCORE-BASED (PA not applicable)")
+    print(f"{'─' * 70}")
+    print(f"  [MACRO] (mean ± std)")
+    for metric in ['AUC-ROC', 'AUC-PR', 'R_AUC_ROC', 'R_AUC_PR', 'VUS_ROC', 'VUS_PR', 'F1_AUC']:
+        mean_val = macro.get(f'{metric}_mean', 0)
+        std_val = macro.get(f'{metric}_std', 0)
+        print(f"    {metric:12s}: {mean_val:.4f} ± {std_val:.4f}")
+    print(f"{'=' * 70}\n")
+
+
+# ============================================================
+# 查找结果文件
+# ============================================================
+def find_all_mode_files(ds_name):
+    """查找 All 模式的结果文件"""
+    possible_paths = [
+        (f"results/{ds_name}/All/classification/classification_trainprobs.csv",
+         f"results/{ds_name}/All/classification/classification_testprobs.csv"),
+        (f"results/{ds_name}/classification/classification_trainprobs.csv",
+         f"results/{ds_name}/classification/classification_testprobs.csv"),
+        (f"results/{ds_name}_All/classification/classification_trainprobs.csv",
+         f"results/{ds_name}_All/classification/classification_testprobs.csv"),
+    ]
+
+    for train_path, test_path in possible_paths:
+        if os.path.exists(train_path) and os.path.exists(test_path):
+            return train_path, test_path
+
+    return None, None
+
+
+def detect_result_structure(ds_name):
+    """检测结果目录的结构"""
+    path = os.path.join('results/', ds_name)
+
+    if not os.path.exists(path):
+        return 'none'
+
+    train_all, test_all = find_all_mode_files(ds_name)
+    has_all = train_all is not None
+
+    has_single = False
+    if os.path.exists(path):
+        for item in os.listdir(path):
+            item_path = os.path.join(path, item)
+            if os.path.isdir(item_path) and item not in ['All', 'classification']:
+                class_path = os.path.join(item_path, 'classification')
+                if os.path.exists(class_path):
+                    has_single = True
+                    break
+
+    if has_all and has_single:
+        return 'both'
+    elif has_all:
+        return 'all_only'
+    elif has_single:
+        return 'single_only'
+    else:
+        return 'none'
+
+
+# ============================================================
+# 主评估函数
+# ============================================================
+def evaluate_dataset(ds_name, slidingWindow=100, mode='auto', fname='All'):
+    """评估数据集（同时输出 PA 和 noPA 结果）"""
+    print("=" * 70)
+    print(f"  Dataset: {ds_name}")
+    print(f"  Fname: {fname}")
+    print(f"  Sliding Window: {slidingWindow}")
+    print(f"  Mode: {mode}")
+    print("=" * 70)
+
+    path = os.path.join('results/', ds_name)
+
     if mode == 'auto':
-        has_all = find_result_files(ds_name, 'All', result_root)[0] is not None
-        has_single = len(get_file_list(ds_name, result_root)) > 0
-        mode = 'all' if (fname == 'All' and has_all) else 'single'
-        print(f"Selected mode: {mode}")
+        structure = detect_result_structure(ds_name)
+        print(f"  Detected structure: {structure}")
+
+        if fname == 'All':
+            if structure in ['all_only', 'both']:
+                mode = 'all'
+            else:
+                print(f"  Warning: fname='All' but no All mode results found, falling back to single mode")
+                mode = 'single'
+        else:
+            mode = 'single'
+
+        print(f"  Selected mode: {mode}")
 
     # All 模式
     if mode == 'all':
-        train_path, test_path = find_result_files(ds_name, 'All', result_root)
+        print("\n[All Mode] Evaluating aggregated multi-channel result...")
+
+        train_path, test_path = find_all_mode_files(ds_name)
+
         if train_path is None:
-            print("Error: Cannot find All mode result files")
-            return None
-        results = evaluate_single_file(pd.read_csv(train_path), pd.read_csv(test_path), use_pa, slidingWindow)
-        print_results(results, f"{ds_name}/All")
-        return results
+            print(f"Error: Cannot find All mode result files for {ds_name}")
+            return None, None
 
-    # Single 模式：逐文件评估，然后拼接所有数据计算汇总指标
-    file_list = [fname] if fname != 'All' else get_file_list(ds_name, result_root)
-    if not file_list:
-        print("Error: No files found")
-        return None
+        print(f"  Found train file: {train_path}")
+        print(f"  Found test file: {test_path}")
 
-    print(f"Files: {len(file_list)}")
-
-    # 收集每个文件的 scores 和 labels
-    all_scores, all_labels = [], []
-    pa_records, nopa_records = [], []
-
-    for filename in file_list:
-        train_path, test_path = find_result_files(ds_name, filename, result_root)
-        if train_path is None:
-            continue
         try:
             df_train = pd.read_csv(train_path)
             df_test = pd.read_csv(test_path)
-
-            # 提取 scores 和 labels
-            scores, labels = extract_scores_and_labels(df_train, df_test)
-            all_scores.append(scores)
-            all_labels.append(labels)
-
-            # 单文件评估（用于收集混淆矩阵）
-            result = evaluate_single_file(df_train, df_test, use_pa, slidingWindow)
-
-            if 'with_pa' in result:
-                pa_records.append(result['with_pa']['label_based'])
-            if 'without_pa' in result:
-                nopa_records.append(result['without_pa']['label_based'])
-
-            f_pa = result['with_pa']['label_based']['F-score'] if 'with_pa' in result else '-'
-            f_nopa = result['without_pa']['label_based']['F-score'] if 'without_pa' in result else '-'
-            print(f"  {filename}: F1(PA)={f_pa if f_pa == '-' else f'{f_pa:.4f}'}, "
-                  f"F1(noPA)={f_nopa if f_nopa == '-' else f'{f_nopa:.4f}'}")
         except Exception as e:
-            print(f"  {filename}: ERROR - {e}")
+            print(f"Error reading files: {e}")
+            return None, None
 
-    if not all_scores:
-        print("No valid results!")
-        return None
+        result = evaluate_single_channel(df_train, df_test, slidingWindow)
+        result['name'] = 'All'
 
-    # 拼接所有文件的 scores 和 labels
-    concat_scores = np.concatenate(all_scores)
-    concat_labels = np.concatenate(all_labels)
+        print_single_result(result, f"{ds_name} (All channels aggregated)")
 
-    print(f"\n{'=' * 70}")
-    print(f"  AGGREGATED RESULTS ({len(file_list)} files, {len(concat_labels)} samples)")
-    print(f"{'=' * 70}")
+        res_df = pd.DataFrame([result])
+        output_file = os.path.join(path, f'{ds_name}_All_evaluation.csv')
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        res_df.to_csv(output_file, index=False)
+        print(f"Results saved to {output_file}")
 
-    results = {}
+        return res_df, result
 
-    # WITH PA
-    if use_pa is None or use_pa is True:
-        print(f"\n{'─' * 70}")
-        print(f"  WITH PA")
-        print(f"{'─' * 70}")
+    # Single 模式
+    else:
+        print("\n[Single Mode] Evaluating each channel separately...")
 
-        # Label-based: Micro 汇总
-        micro_pa = compute_micro_label_metrics(pd.DataFrame(pa_records))
-        print(f"\n  [Label-based metrics] (Micro: aggregate TP/FP/FN/TN)")
-        print(f"    Precision : {micro_pa['Precision']:.4f}")
-        print(f"    Recall    : {micro_pa['Recall']:.4f}")
-        print(f"    F-score   : {micro_pa['F-score']:.4f}")
-        print(f"    ACC       : {micro_pa['ACC']:.4f}")
-        print(f"    (TP={micro_pa['TP']}, TN={micro_pa['TN']}, FP={micro_pa['FP']}, FN={micro_pa['FN']})")
+        res_list = []
 
-        # Affiliation: 在拼接数据上重新计算
-        thresh_pa = find_best_threshold(concat_scores, concat_labels, apply_pa=True)
-        pred_pa = point_adjustment(concat_labels, (concat_scores >= thresh_pa).astype(int))
-        aff_pa = compute_affiliation_metrics(concat_labels, pred_pa)
-        print(f"\n  [Affiliation metrics] (on concatenated data)")
-        print(f"    Aff-Pre   : {aff_pa['Aff-Pre']:.4f}")
-        print(f"    Aff-Rec   : {aff_pa['Aff-Rec']:.4f}")
-        print(f"    Aff-F1    : {aff_pa['Aff-F1']:.4f}")
+        if fname != 'All':
+            file_list = [fname]
+        else:
+            file_list = sorted(os.listdir(path))
 
-        results['with_pa'] = {'label_based': micro_pa, 'affiliation': aff_pa}
+        for filename in file_list:
+            full_path = os.path.join(path, filename)
+            if not os.path.isdir(full_path):
+                continue
+            if filename in ['All', 'GECCO', '.json', 'classification']:
+                continue
 
-    # WITHOUT PA
-    if use_pa is None or use_pa is False:
-        print(f"\n{'─' * 70}")
-        print(f"  WITHOUT PA")
-        print(f"{'─' * 70}")
+            try:
+                df_train = pd.read_csv(f"{full_path}/classification/classification_trainprobs.csv")
+                df_test = pd.read_csv(f"{full_path}/classification/classification_testprobs.csv")
+            except FileNotFoundError:
+                continue
 
-        # Label-based: Micro 汇总
-        micro_nopa = compute_micro_label_metrics(pd.DataFrame(nopa_records))
-        print(f"\n  [Label-based metrics] (Micro: aggregate TP/FP/FN/TN)")
-        print(f"    Precision : {micro_nopa['Precision']:.4f}")
-        print(f"    Recall    : {micro_nopa['Recall']:.4f}")
-        print(f"    F-score   : {micro_nopa['F-score']:.4f}")
-        print(f"    ACC       : {micro_nopa['ACC']:.4f}")
-        print(f"    (TP={micro_nopa['TP']}, TN={micro_nopa['TN']}, FP={micro_nopa['FP']}, FN={micro_nopa['FN']})")
+            try:
+                result = evaluate_single_channel(df_train, df_test, slidingWindow)
+                result['name'] = filename
+                print(f"  {filename}: F1(PA)={result['F-score_PA']:.4f}, F1(noPA)={result['F-score_noPA']:.4f}")
+            except Exception as e:
+                print(f"  {filename}: ERROR - {e}")
+                continue
 
-        # Affiliation: 在拼接数据上重新计算
-        thresh_nopa = find_best_threshold(concat_scores, concat_labels, apply_pa=False)
-        pred_nopa = (concat_scores >= thresh_nopa).astype(int)
-        aff_nopa = compute_affiliation_metrics(concat_labels, pred_nopa)
-        print(f"\n  [Affiliation metrics] (on concatenated data)")
-        print(f"    Aff-Pre   : {aff_nopa['Aff-Pre']:.4f}")
-        print(f"    Aff-Rec   : {aff_nopa['Aff-Rec']:.4f}")
-        print(f"    Aff-F1    : {aff_nopa['Aff-F1']:.4f}")
+            res_list.append(result)
 
-        results['without_pa'] = {'label_based': micro_nopa, 'affiliation': aff_nopa}
+        if not res_list:
+            print("\nNo valid results found!")
+            return None, None
 
-    # Score-based: 在拼接数据上计算
-    print(f"\n{'─' * 70}")
-    print(f"  SCORE-BASED METRICS (PA not applicable)")
-    print(f"{'─' * 70}")
-    score_metrics = compute_score_based_metrics(concat_labels, concat_scores, slidingWindow)
-    print(f"    slidingWindow : {score_metrics['slidingWindow']}")
-    print(f"    AUC-ROC       : {score_metrics['AUC-ROC']:.4f}")
-    print(f"    AUC-PR        : {score_metrics['AUC-PR']:.4f}")
-    print(f"    R_AUC_ROC     : {score_metrics['R_AUC_ROC']:.4f}")
-    print(f"    R_AUC_PR      : {score_metrics['R_AUC_PR']:.4f}")
-    print(f"    VUS_ROC       : {score_metrics['VUS_ROC']:.4f}")
-    print(f"    VUS_PR        : {score_metrics['VUS_PR']:.4f}")
-    print(f"    F1_AUC        : {score_metrics['F1_AUC']:.4f}")
-    print(f"{'=' * 70}\n")
+        res_df = pd.DataFrame(res_list)
+        n_channels = len(res_df)
 
-    results['score_based'] = score_metrics
-    return results
+        macro = compute_macro_metrics(res_df)
+        micro = compute_micro_metrics(res_df)
+
+        print_multi_channel_summary(macro, micro, n_channels)
+
+        detail_file = os.path.join(path, f'{ds_name}_channels_evaluation.csv')
+        res_df.to_csv(detail_file, index=False)
+        print(f"Channel details saved to {detail_file}")
+
+        summary_data = {
+            'Aggregation': ['Macro_noPA', 'Micro_noPA', 'Macro_PA', 'Micro_PA'],
+            'Precision': [
+                macro['Precision_noPA_mean'], micro['Precision_noPA'],
+                macro['Precision_PA_mean'], micro['Precision_PA']
+            ],
+            'Recall': [
+                macro['Recall_noPA_mean'], micro['Recall_noPA'],
+                macro['Recall_PA_mean'], micro['Recall_PA']
+            ],
+            'F-score': [
+                macro['F-score_noPA_mean'], micro['F-score_noPA'],
+                macro['F-score_PA_mean'], micro['F-score_PA']
+            ],
+            'ACC': [
+                macro['ACC_noPA_mean'], micro['ACC_noPA'],
+                macro['ACC_PA_mean'], micro['ACC_PA']
+            ],
+        }
+
+        summary_df = pd.DataFrame(summary_data)
+        summary_file = os.path.join(path, f'{ds_name}_summary.csv')
+        summary_df.to_csv(summary_file, index=False)
+        print(f"Summary saved to {summary_file}")
+
+        return res_df, {'macro': macro, 'micro': micro}
 
 
+# ============================================================
+# 入口
+# ============================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='MSL')
-    parser.add_argument('--fname', type=str, default='All')
-    parser.add_argument('--use_pa', type=str, default='both', choices=['true', 'false', 'both'])
-    parser.add_argument('--sliding_window', type=int, default=100)
-    parser.add_argument('--mode', type=str, default='auto', choices=['auto', 'single', 'all'])
-    parser.add_argument('--result_root', type=str, default='results')
+    parser = argparse.ArgumentParser(description='Anomaly Detection Evaluation')
+    parser.add_argument('--dataset', type=str, default='MSL', help='Dataset name')
+    parser.add_argument('--fname', type=str, default='All', help='File name or "All"')
+    parser.add_argument('--sliding_window', type=int, default=100, help='Sliding window for VUS/R_AUC')
+    parser.add_argument('--mode', type=str, default='auto', choices=['auto', 'single', 'all'],
+                        help='Evaluation mode')
+
     args = parser.parse_args()
 
     evaluate_dataset(
         ds_name=args.dataset,
-        fname=args.fname,
-        use_pa=None if args.use_pa == 'both' else (args.use_pa == 'true'),
         slidingWindow=args.sliding_window,
         mode=args.mode,
-        result_root=args.result_root
+        fname=args.fname
     )

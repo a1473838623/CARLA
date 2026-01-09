@@ -38,6 +38,6 @@ for file_name in data_info['chan_id']:
 subprocess.run([
     'python', 'Evaluation_toolkit.py',
     '--dataset', 'MSL',
-    '--fname', 'All'
+    '--fname', 'All',
     '--mode', 'single'
 ])

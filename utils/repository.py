@@ -26,7 +26,7 @@ class TSRepository(object):
         retrieval_one_hot.resize_(batchSize * self.K, self.C).zero_()
         retrieval_one_hot.scatter_(1, retrieval.view(-1, 1), 1)
         yd_transform = yd.clone().div_(self.temperature).exp_()
-        probs = torch.sum(torch.mul(retrieval_one_hot.view(batchSize, -1 , self.C), 
+        probs = torch.sum(torch.mul(retrieval_one_hot.view(batchSize, -1 , self.C),
                           yd_transform.view(batchSize, -1, 1)), 1)
         _, class_preds = probs.sort(1, True)
         class_pred = class_preds[:, 0]
@@ -40,7 +40,7 @@ class TSRepository(object):
         class_pred = torch.index_select(self.targets, 0, sample_pred)
         return class_pred
 
-    def mine_nearest_neighbors(self, topk, calculate_accuracy=True):
+    def mine_nearest_neighbors(self, topk, calculate_accuracy=False):
         # mine the topk nearest neighbors for every sample
         features = self.features.cpu().numpy()
         knn_model = NearestNeighbors(n_neighbors=features.shape[0],

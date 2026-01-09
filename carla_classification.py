@@ -91,11 +91,11 @@ def main():
                 p['fname'] = file_name
 
                 if ii == 0:
-                    base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
+                    base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
                     val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
                                                   base_dataset.std)
                 else:
-                    new_base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
+                    new_base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
                     new_val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, new_base_dataset.mean,
                                                       new_base_dataset.std)
 
@@ -105,7 +105,7 @@ def main():
             p['fname'] = 'All'
         else:
             # Standard single file loading
-            base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_neighbors_dataset=False)
+            base_dataset = get_train_dataset(p, train_transformations, sanomaly, to_augmented_dataset=True)
             val_dataset = get_val_dataset(p, val_transformations, sanomaly, False, base_dataset.mean,
                                           base_dataset.std)
     elif p['train_db_name'] == 'yahoo':

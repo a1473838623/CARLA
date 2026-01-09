@@ -25,7 +25,7 @@ class NIPS_TS_Water(Dataset):
 
         self.data = []
         self.targets = []
-        wsz, stride = 100, 10
+        wsz, stride = 200, 10
 
         # Load Train Data to fit Scaler
         train_data_path = os.path.join(self.root, "NIPS_TS_Water_train.npy")

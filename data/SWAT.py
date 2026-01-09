@@ -58,8 +58,9 @@ class SWAT(Dataset):
         #     temp = (temp - self.mean) / self.std
 
         if self.train:
-            self.mean = np.mean(temp, axis=0)
-            self.std = np.std(temp, axis=0)
+            min_column = np.amin(temp, axis=0)
+            max_column = np.amax(temp, axis=0)
+            self.mean, self.std = min_column, max_column
         else:
             self.mean, self.std = mean_data, std_data
             range_val = (std_data - mean_data) + 1e-20

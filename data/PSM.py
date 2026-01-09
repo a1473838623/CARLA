@@ -28,7 +28,7 @@ class PSM(Dataset):
         self.targets = []
 
         # Window size and stride configuration
-        wsz, stride = 100, 10  # Common settings for PSM, adjustable
+        wsz, stride = 200, 10  # Common settings for PSM, adjustable
 
         # Load Train Data for Scalar Fit
         train_df = pd.read_csv(os.path.join(self.root, 'train.csv'))
